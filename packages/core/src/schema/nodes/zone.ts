@@ -23,6 +23,13 @@ export const ZoneNode = BaseNode.extend({
   ceilingHeight: z.number().min(0.1).default(2.7),
   occupancy: z.string().trim().max(80).default(''),
   clearDimensionPolicy: z.enum(['none', 'inside-faces', 'finish-faces']).default('none'),
+  // resvr fork. The room's kind as a dotted tag (Room.Bedroom.Master), which every rule in the
+  // interior designer matches on. Nothing in Pascal reads it. Named for the fork so a tag concept
+  // arriving upstream is a real conflict rather than a silent change of meaning.
+  resvrTag: z
+    .string()
+    .regex(/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*$/)
+    .optional(),
   // Visual styling
   color: z.string().default('#3b82f6'), // Default blue
   metadata: z.record(z.string(), z.unknown()).optional().default({}),
