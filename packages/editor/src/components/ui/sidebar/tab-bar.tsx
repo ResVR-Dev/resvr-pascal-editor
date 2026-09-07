@@ -1,6 +1,6 @@
 'use client'
 
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { editorHostPanelRegistry } from '../../../lib/plugin-panels'
 import { triggerSFX } from './../../../lib/sfx-bus'
 import { cn } from './../../../lib/utils'
@@ -19,6 +19,12 @@ export type SidebarTab = {
    * keeps the icon highlighted regardless of collapse.
    */
   noPanel?: boolean
+  /**
+   * Draw a divider above this tab in the rail. Lets a host that supplies the
+   * whole rail keep its own tabs in a group apart from the editor's, the way
+   * plugin panels already sit below one.
+   */
+  separatorBefore?: boolean
 }
 
 interface TabBarProps {
@@ -83,27 +89,32 @@ export function IconRail({ tabs, activeTab, collapsed, onIconClick }: IconRailPr
   const renderTab = (tab: SidebarTab) => {
     const showActive = activeTab === tab.id && (!collapsed || tab.noPanel === true)
     return (
-      <Tooltip key={tab.id}>
-        <TooltipTrigger asChild>
-          <button
-            className={cn(
-              'group flex h-11 w-11 items-center justify-center rounded-xl transition-all duration-200 [&_img]:transition-[opacity,filter] [&_img]:duration-200',
-              showActive
-                ? 'bg-accent text-foreground shadow-sm [&_img]:opacity-100 [&_img]:grayscale-0'
-                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground [&_img]:opacity-60 [&_img]:grayscale hover:[&_img]:opacity-100 hover:[&_img]:grayscale-0',
-            )}
-            onClick={() => {
-              triggerSFX('sfx:menu-click')
-              onIconClick(tab.id)
-            }}
-            onMouseEnter={() => triggerSFX('sfx:menu-hover')}
-            type="button"
-          >
-            {tab.icon ?? tab.label.charAt(0)}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="right">{tab.label}</TooltipContent>
-      </Tooltip>
+      <Fragment key={tab.id}>
+        {tab.separatorBefore === true && (
+          <div className="my-1 w-6 border-border/70 border-t" />
+        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              className={cn(
+                'group flex h-11 w-11 items-center justify-center rounded-xl transition-all duration-200 [&_img]:transition-[opacity,filter] [&_img]:duration-200',
+                showActive
+                  ? 'bg-accent text-foreground shadow-sm [&_img]:opacity-100 [&_img]:grayscale-0'
+                  : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground [&_img]:opacity-60 [&_img]:grayscale hover:[&_img]:opacity-100 hover:[&_img]:grayscale-0',
+              )}
+              onClick={() => {
+                triggerSFX('sfx:menu-click')
+                onIconClick(tab.id)
+              }}
+              onMouseEnter={() => triggerSFX('sfx:menu-hover')}
+              type="button"
+            >
+              {tab.icon ?? tab.label.charAt(0)}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">{tab.label}</TooltipContent>
+        </Tooltip>
+      </Fragment>
     )
   }
 
