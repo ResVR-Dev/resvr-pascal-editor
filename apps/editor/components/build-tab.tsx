@@ -92,7 +92,14 @@ const subscribeToClientMount = () => () => {}
 
 function collectBuildTypes(floorplanMode: FloorplanMode): BuildType[] {
   const baseKinds = new Set(BASE_BUILD_TYPES.flatMap((type) => (type.kind ? [type.kind] : [])))
-  const tools = BASE_BUILD_TYPES.filter((type) => type.kind).map((type, index) => ({
+  // A host can register a subset of the built-in plugin, which is how a kind is turned off: the
+  // registry is the statement of what a scene may contain. The list above is written out by hand, so
+  // without this check the palette offers a tool for a kind that was deliberately left out, and
+  // clicking it selects a tool that can draw nothing. Entries carrying no kind are not nodes at all
+  // (paint, measure) and are appended untouched below.
+  const tools = BASE_BUILD_TYPES.filter(
+    (type) => type.kind && nodeRegistry.has(type.kind),
+  ).map((type, index) => ({
     ...type,
     paletteOrder:
       nodeRegistry.get(type.kind!)?.presentation?.paletteOrder ?? type.paletteOrder ?? index * 10,
@@ -120,7 +127,15 @@ function collectBuildTypes(floorplanMode: FloorplanMode): BuildType[] {
     })
   }
   tools.sort((left, right) => (left.paletteOrder ?? 0) - (right.paletteOrder ?? 0))
-  return [...tools, ...BASE_BUILD_TYPES.filter((type) => !type.kind)]
+  // A group tile has no kind of its own and opens a sub-grid. MEP's sub-grid is written out by hand
+  // like the base list, so a host that registered none of those kinds gets a tile that opens onto
+  // nothing.
+  const mepAvailable = MEP_ITEMS.some((item) => nodeRegistry.has(item.kind))
+
+  return [
+    ...tools,
+    ...BASE_BUILD_TYPES.filter((type) => !type.kind && (type.id !== 'mep' || mepAvailable)),
+  ]
 }
 
 // MEP sub-grid surfaced under the "MEP" tile — same icons + ordering the MEP
@@ -328,8 +343,12 @@ export function BuildTab() {
       activateTerrainSculptMode()
     } else if (type.id === 'mep') {
       // MEP is a group tile: arm its first tool so a usable tool is active
-      // (and we leave any prior paint mode), then reveal the MEP sub-grid.
-      activateBuildTool('duct-segment')
+      // (and we leave any prior paint mode), then reveal the MEP sub-grid. Its first tool rather
+      // than a named one, because a host may have registered only some of the sub-grid.
+      const armed = MEP_ITEMS.find((item) => nodeRegistry.has(item.kind))
+      if (armed) {
+        activateBuildTool(armed.kind)
+      }
     } else if (type.id === 'kitchen') {
       activateModularCabinetTool()
     } else if (type.kind) {
@@ -541,7 +560,7 @@ export function BuildTab() {
               className="grid gap-1.5 px-0.5"
               style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(56px, 1fr))' }}
             >
-              {MEP_ITEMS.map((item) => {
+              {MEP_ITEMS.filter((item) => nodeRegistry.has(item.kind)).map((item) => {
                 const active = isMepItemActive(item)
                 return (
                   <Tooltip key={item.id}>
