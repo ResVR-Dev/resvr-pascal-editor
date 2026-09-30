@@ -14,6 +14,15 @@ import { type FunctionTreeNode, FunctionTreePanel } from './function-tree-panel'
 
 const PLACEMENT_TAGS = new Set(['floor', 'wall', 'ceiling', 'countertop'])
 
+/** One chip of the source filter row. */
+export type SourceChip = { id: string; label: string }
+
+/** An embedder's own source chips, and which one an item belongs to. */
+export type SourceFilter = {
+  chips: SourceChip[]
+  chipOf: (item: AssetInput) => string
+}
+
 export function ItemsPanel({
   items,
   onSearchChange,
@@ -23,6 +32,7 @@ export function ItemsPanel({
   functionTree,
   showSourceFilter = true,
   showTagFilters = true,
+  sourceFilter,
 }: {
   items?: AssetInput[]
   /** Called when the search query changes (community edition uses this for server-side search) */
@@ -54,6 +64,11 @@ export function ItemsPanel({
    * open-source editor hides these to keep the panel to plain categories.
    */
   showTagFilters?: boolean
+  /**
+   * Replaces the Library/Community/Mine chips with the embedder's own, and says
+   * which chip each item belongs to. The first chip starts selected.
+   */
+  sourceFilter?: SourceFilter
 }) {
   // When the embedder supplies a function taxonomy, the hierarchical browse
   // replaces the legacy `furnishTools` category tabs entirely.
@@ -78,6 +93,7 @@ export function ItemsPanel({
     searchResults={searchResults}
     showSourceFilter={showSourceFilter}
     showTagFilters={showTagFilters}
+    sourceFilter={sourceFilter}
   />
 }
 
@@ -89,6 +105,7 @@ function LegacyItemsPanel({
   emptyState,
   showSourceFilter = true,
   showTagFilters = true,
+  sourceFilter,
 }: {
   items?: AssetInput[]
   onSearchChange?: (query: string) => void
@@ -97,6 +114,7 @@ function LegacyItemsPanel({
   emptyState?: React.ReactNode
   showSourceFilter?: boolean
   showTagFilters?: boolean
+  sourceFilter?: SourceFilter
 }) {
   const mode = useEditor((s) => s.mode)
   const catalogCategory = useEditor((s) => s.catalogCategory)
@@ -110,9 +128,27 @@ function LegacyItemsPanel({
   // the curated catalog rather than every uploaded item; clicking the chip
   // again clears the filter (`null` = show everything). With the chips hidden
   // there is nothing to filter by, so start unfiltered.
-  const [activeSource, setActiveSource] = useState<AssetInput['source'] | null>(
-    showSourceFilter ? 'library' : null,
+  //
+  // An embedder's own chips start on their first one instead.
+  const [activeSource, setActiveSource] = useState<string | null>(
+    sourceFilter ? (sourceFilter.chips[0]?.id ?? null) : showSourceFilter ? 'library' : null,
   )
+  // The embedder's chips can arrive after the panel mounts, or change under it
+  // (a catalog dropped from the pick). Until someone picks a chip, the first one
+  // is selected; a picked chip that goes away falls back to the first one.
+  // Clearing the filter by clicking the selected chip is a pick like any other.
+  const [hasPickedSource, setHasPickedSource] = useState(false)
+  useEffect(() => {
+    if (!sourceFilter) return
+    const first = sourceFilter.chips[0]?.id ?? null
+    if (!hasPickedSource) {
+      if (activeSource !== first) setActiveSource(first)
+      return
+    }
+    if (activeSource === null) return
+    if (sourceFilter.chips.some((chip) => chip.id === activeSource)) return
+    setActiveSource(first)
+  }, [activeSource, hasPickedSource, sourceFilter])
   const [search, setSearch] = useState('')
   const isServerSearch = onSearchChange !== undefined
   // True when server search is active but results haven't come back yet
@@ -148,6 +184,7 @@ function LegacyItemsPanel({
   // see it. My drafts only appear under Mine.
   const matchesSource = (item: AssetInput) => {
     if (!activeSource) return true
+    if (sourceFilter) return sourceFilter.chipOf(item) === activeSource
     const itemSource = item.source ?? 'library'
     if (activeSource === 'mine') return itemSource === 'mine'
     if (activeSource === 'library') return itemSource === 'library'
@@ -166,7 +203,7 @@ function LegacyItemsPanel({
   // The three source chips are always shown so users can discover the
   // filter even before they own any items. Selecting "Mine" with no
   // matching items falls through to the empty/no-results state.
-  const sourceChips: Array<{ id: AssetInput['source']; label: string }> = [
+  const sourceChips: SourceChip[] = sourceFilter?.chips ?? [
     { id: 'library', label: 'Library' },
     { id: 'community', label: 'Community' },
     { id: 'mine', label: 'Mine' },
@@ -259,7 +296,10 @@ function LegacyItemsPanel({
                         : 'text-muted-foreground hover:text-foreground',
                     )}
                     key={chip.id}
-                    onClick={() => setActiveSource(isActive ? null : chip.id)}
+                    onClick={() => {
+                      setHasPickedSource(true)
+                      setActiveSource(isActive ? null : chip.id)
+                    }}
                     type="button"
                   >
                     {chip.label}
