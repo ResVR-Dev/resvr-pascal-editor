@@ -3,6 +3,7 @@
 import { Icon } from '@iconify/react'
 import { Copy, Group, Move, PencilRuler, Search, Spline, Trash2, Ungroup } from 'lucide-react'
 import type { MouseEventHandler, PointerEventHandler } from 'react'
+import type { HostNodeAction } from '../../store/host-node-actions-store'
 
 type NodeActionMenuProps = {
   onFind?: MouseEventHandler<HTMLButtonElement>
@@ -16,6 +17,8 @@ type NodeActionMenuProps = {
   onGroup?: MouseEventHandler<HTMLButtonElement>
   /** Dissolve session group (Ctrl/Cmd+Shift+G). */
   onUngroup?: MouseEventHandler<HTMLButtonElement>
+  /** resvr fork: the host's own buttons, drawn before Delete. */
+  hostActions?: readonly HostNodeAction[]
   onPointerDown?: PointerEventHandler<HTMLDivElement>
   onPointerUp?: PointerEventHandler<HTMLDivElement>
   onPointerEnter?: PointerEventHandler<HTMLDivElement>
@@ -32,6 +35,7 @@ export function NodeActionMenu({
   onCurve,
   onGroup,
   onUngroup,
+  hostActions,
   onPointerDown,
   onPointerUp,
   onPointerEnter,
@@ -133,6 +137,18 @@ export function NodeActionMenu({
           <Icon height={16} icon="carbon:cut-out" width={16} />
         </button>
       )}
+      {hostActions?.map((action) => (
+        <button
+          aria-label={action.label}
+          className="tooltip-trigger rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          key={action.id}
+          onClick={action.onSelect}
+          title={action.label}
+          type="button"
+        >
+          {action.icon}
+        </button>
+      ))}
       {onDelete && (
         <button
           aria-label="Delete"

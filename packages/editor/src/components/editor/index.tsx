@@ -42,6 +42,10 @@ import {
   writePersistedSelection,
 } from '../../lib/scene'
 import { disposeSFXBus, initSFXBus } from '../../lib/sfx-bus'
+import {
+  type HostNodeActions,
+  setHostNodeActions,
+} from '../../store/host-node-actions-store'
 import { type CameraHintAction, useCameraHintFocus } from '../../store/use-camera-hint-focus'
 import useEditor from '../../store/use-editor'
 import useFloorplanMode from '../../store/use-floorplan-mode'
@@ -183,6 +187,9 @@ export interface EditorProps {
    * one node is selected.
    */
   multiSelectionFooter?: ReactNode
+
+  /** resvr fork: buttons the host adds to the floating action menu over the selection. */
+  hostNodeActions?: HostNodeActions
 
   /** Host-owned content mounted inside the editor's React Three Fiber scene. */
   viewerSceneSlot?: ReactNode
@@ -1221,6 +1228,7 @@ function EditorContent({
   stageOverlay,
   inspectorFooter,
   multiSelectionFooter,
+  hostNodeActions,
   viewerSceneSlot,
   floorplanSceneSlot,
   projectId,
@@ -1245,6 +1253,11 @@ function EditorContent({
   const isStudioMode = useEditor((s) => s.workspaceMode === 'studio')
 
   useKeyboard({ isVersionPreviewMode, disabled: isFirstPersonMode || isStudioMode })
+
+  useEffect(() => {
+    setHostNodeActions(hostNodeActions ?? null)
+    return () => setHostNodeActions(null)
+  }, [hostNodeActions])
 
   const { isLoadingSceneRef } = useAutoSave({
     onSave,

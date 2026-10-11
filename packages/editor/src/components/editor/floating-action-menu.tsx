@@ -64,6 +64,7 @@ import useInteractionScope, {
 } from '../../store/use-interaction-scope'
 import { IconRefGlyph } from '../ui/icon-ref'
 import { formatMeasurement, MeasurementPill } from './measurement-pill'
+import { useHostNodeActions } from '../../store/host-node-actions-store'
 import { NodeActionMenu } from './node-action-menu'
 
 /**
@@ -324,6 +325,7 @@ export function FloatingActionMenu() {
   // Subscribe just to the selected node so unrelated scene updates do not
   // re-render this menu.
   const node = useScene((s) => (selectedId ? (s.nodes[selectedId as AnyNodeId] ?? null) : null))
+  const hostActions = useHostNodeActions(useMemo(() => (node ? [node] : []), [node]))
   const quickActionNodes = useScene(useShallow((s) => collectQuickActionNodes(s.nodes, selectedId)))
   const quickActions = useMemo<NodeQuickAction[]>(
     () =>
@@ -786,6 +788,7 @@ export function FloatingActionMenu() {
           >
             {menuVisibility.actions ? (
               <NodeActionMenu
+                hostActions={hostActions}
                 onFind={
                   node &&
                   canFindNode &&

@@ -16,6 +16,7 @@ import useSessionGroups, {
 } from '../../store/use-session-groups'
 import { deleteSelection, duplicateSelectionAndPickUp, startGroupPickUp } from './group-actions'
 import { classifyParticipant, computeGroupBox, expandToComponent } from './group-transform-shared'
+import { useHostNodeActions } from '../../store/host-node-actions-store'
 import { NodeActionMenu } from './node-action-menu'
 import { useMeshSettleEpoch } from './use-mesh-settle-epoch'
 
@@ -52,6 +53,12 @@ export function GroupFloatingActionMenu() {
         : [],
     [selectedIds, levelId, nodes],
   )
+
+  const participants = useMemo(
+    () => participantIds.flatMap((id) => (nodes[id as AnyNodeId] ? [nodes[id as AnyNodeId]!] : [])),
+    [participantIds, nodes],
+  )
+  const hostActions = useHostNodeActions(participants)
 
   const liveIds = useMemo(() => new Set(Object.keys(nodes)), [nodes])
   // Always offer Group when multi-select is not already exactly a session group.
@@ -130,6 +137,7 @@ export function GroupFloatingActionMenu() {
       >
         <div className="relative" ref={menuScaleRef} style={{ transformOrigin: 'center center' }}>
           <NodeActionMenu
+            hostActions={hostActions}
             onDelete={handleDelete}
             onDuplicate={handleDuplicate}
             onGroup={showGroup ? handleGroup : undefined}
