@@ -42,6 +42,7 @@ import type {
   SkylightNode,
   SlabNode,
   SolarPanelNode,
+  ResvrCameraNode,
   SpawnNode,
   StairNode,
   StairSegmentNode,
@@ -104,6 +105,7 @@ export type ZoneEvent = NodeEvent<ZoneNode>
 export type ShelfEvent = NodeEvent<ShelfNode>
 export type SlabEvent = NodeEvent<SlabNode>
 export type SpawnEvent = NodeEvent<SpawnNode>
+export type ResvrCameraEvent = NodeEvent<ResvrCameraNode>
 export type CeilingEvent = NodeEvent<CeilingNode>
 export type ColumnEvent = NodeEvent<ColumnNode>
 export type ConstructionDimensionEvent = NodeEvent<ConstructionDimensionNode>
@@ -312,6 +314,7 @@ type EditorEvents = GridEvents &
   NodeEvents<'slab', SlabEvent> &
   NodeEvents<'shelf', ShelfEvent> &
   NodeEvents<'spawn', SpawnEvent> &
+  NodeEvents<'resvr-camera', ResvrCameraEvent> &
   NodeEvents<'ceiling', CeilingEvent> &
   NodeEvents<'column', ColumnEvent> &
   NodeEvents<'construction-dimension', ConstructionDimensionEvent> &

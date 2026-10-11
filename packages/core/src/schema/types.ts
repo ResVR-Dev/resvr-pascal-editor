@@ -29,6 +29,7 @@ import { MeasurementNode } from './nodes/measurement'
 import { PipeFittingNode } from './nodes/pipe-fitting'
 import { PipeSegmentNode } from './nodes/pipe-segment'
 import { PipeTrapNode } from './nodes/pipe-trap'
+import { ResvrCameraNode } from './nodes/resvr-camera'
 import { RidgeVentNode } from './nodes/ridge-vent'
 import { RoofNode } from './nodes/roof'
 import { RoofSegmentNode } from './nodes/roof-segment'
@@ -129,6 +130,8 @@ export const AnyNode = nodeUnion([
   PipeSegmentNode,
   PipeFittingNode,
   PipeTrapNode,
+  // resvr fork: the showhome's buyer cameras.
+  ResvrCameraNode,
 ])
 
 export type AnyNode = z.infer<typeof AnyNode>

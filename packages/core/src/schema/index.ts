@@ -295,6 +295,12 @@ export {
   SolarPanelMaterialRole,
   SolarPanelNode,
 } from './nodes/solar-panel'
+export {
+  ResvrCameraNode,
+  ResvrCameraParameters,
+  ResvrCameraTarget,
+  ResvrCameraType,
+} from './nodes/resvr-camera'
 export { SpawnNode } from './nodes/spawn'
 export type { StairSurfaceMaterialRole, StairSurfaceMaterialSpec } from './nodes/stair'
 export {
