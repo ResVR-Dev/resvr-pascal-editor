@@ -54,11 +54,15 @@ export function GroupFloatingActionMenu() {
     [selectedIds, levelId, nodes],
   )
 
-  const participants = useMemo(
-    () => participantIds.flatMap((id) => (nodes[id as AnyNodeId] ? [nodes[id as AnyNodeId]!] : [])),
-    [participantIds, nodes],
+  // The whole selection, not only what can be moved together: a host action acts on all of it.
+  const selectedNodes = useMemo(
+    () =>
+      selectedIds.length > 1
+        ? selectedIds.flatMap((id) => (nodes[id as AnyNodeId] ? [nodes[id as AnyNodeId]!] : []))
+        : [],
+    [selectedIds, nodes],
   )
-  const hostActions = useHostNodeActions(participants)
+  const hostActions = useHostNodeActions(selectedNodes)
 
   const liveIds = useMemo(() => new Set(Object.keys(nodes)), [nodes])
   // Always offer Group when multi-select is not already exactly a session group.
