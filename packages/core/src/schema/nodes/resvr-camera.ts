@@ -31,7 +31,7 @@ export const ResvrCameraTarget = z.object({
 // box in this scene's axes. Defaults are what a new camera gets in Unreal: the struct's own,
 // overridden by CameraComponentDefaults in the project's DefaultGame.ini.
 export const ResvrCameraParameters = z.object({
-  focusZoomsToHit: z.boolean().default(true),
+  shouldFocusZoomToHit: z.boolean().default(true),
   focusDistanceMultiplier: z.number().default(0.5),
   focusTraceDistance: z.number().default(100000),
   fallbackFocusDistance: z.number().default(100),
@@ -39,7 +39,7 @@ export const ResvrCameraParameters = z.object({
   // Linear RGBA.
   cameraColor: z.tuple([z.number(), z.number(), z.number(), z.number()]).default([0.016, 1, 0.33, 1]),
   cameraVisualScale: z.number().default(0.25),
-  clampPanning: z.boolean().default(true),
+  shouldClampPanning: z.boolean().default(true),
   minPanning: Triple.default([0, 0, 0]),
   maxPanning: Triple.default([0, 0, 0]),
   // Relative to the authored orbit: how far a buyer may pitch and yaw away from it.
@@ -51,10 +51,10 @@ export const ResvrCameraParameters = z.object({
     pitch: (10 * Math.PI) / 180,
     yaw: (20 * Math.PI) / 180,
   }),
-  enableCameraInput: z.boolean().default(true),
-  enablePanningInput: z.boolean().default(true),
-  enableRotationInput: z.boolean().default(true),
-  enableZoomInput: z.boolean().default(true),
+  isCameraInputEnabled: z.boolean().default(true),
+  isPanningInputEnabled: z.boolean().default(true),
+  isRotationInputEnabled: z.boolean().default(true),
+  isZoomInputEnabled: z.boolean().default(true),
   panSpeed: z.number().default(0.1),
   rotationSpeed: z.number().default(0.5),
   zoomSpeed: z.number().default(0.5),
@@ -81,7 +81,7 @@ export const ResvrCameraNode = BaseNode.extend({
   categories: z.array(z.string()).default([]),
   parameters: ResvrCameraParameters.default(() => ResvrCameraParameters.parse({})),
   // bClampYaw and CameraPriority, which sit beside the parameters in Unreal.
-  clampYaw: z.boolean().default(true),
+  shouldClampYaw: z.boolean().default(true),
   priority: z.number().int().default(0),
   // A person renamed it, so a change of targets leaves the name alone.
   isNamedByHand: z.boolean().default(false),
