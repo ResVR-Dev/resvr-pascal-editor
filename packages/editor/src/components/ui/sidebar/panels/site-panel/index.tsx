@@ -80,6 +80,7 @@ import { MetricControl } from '../../../controls/metric-control'
 import { LevelDuplicateDialog } from '../../../level-duplicate-dialog'
 import { CollectionsSection } from './collection-tree-node'
 import { InlineRenameInput } from './inline-rename-input'
+import { OutlineLevelSummary } from './outline-badges'
 import { ZoneMembershipCheckbox } from './zone-membership-checkbox'
 import { focusTreeNode, TreeNode, TreeNodeWrapper } from './tree-node'
 import { TreeNodeDragProvider } from './tree-node-drag'
@@ -964,6 +965,7 @@ const LevelItem = memo(function LevelItem({
             </button>
           </PopoverContent>
         </Popover>
+        <OutlineLevelSummary levelId={level.id} />
       </div>
       <AnimatePresence initial={false}>
         {isExpanded && (
