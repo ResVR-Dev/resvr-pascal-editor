@@ -15,6 +15,7 @@ import {
   isAngleSnapActive,
   isGridSnapActive,
   isMagneticSnapActive,
+  isTypingTarget,
   markToolCancelConsumed,
   triggerSFX,
   useEditor,
@@ -308,6 +309,7 @@ const LiquidLineTool = () => {
       // rather than folding into one mitered polyline run.
       const line = LiquidLineNode.parse({
         ...liquidLineDefinition.defaults(),
+        ...useEditor.getState().toolDefaults['liquid-line'],
         name: 'Liquid Line',
         path: [start, end],
       })
@@ -325,7 +327,10 @@ const LiquidLineTool = () => {
     const commitTrace = (target: FollowTarget) => {
       const traced = tracePath(target)
       if (!traced) return
-      const defaults = liquidLineDefinition.defaults()
+      const defaults = {
+        ...liquidLineDefinition.defaults(),
+        ...useEditor.getState().toolDefaults['liquid-line'],
+      }
       const create = []
       for (let i = 0; i < traced.length - 1; i++) {
         const a = traced[i]!
@@ -463,8 +468,7 @@ const LiquidLineTool = () => {
     }
 
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (isTypingTarget(e.target)) return
       if (e.key === 'f' || e.key === 'F') {
         e.preventDefault()
         useLiquidLineToolOptions.getState().toggleFollow()

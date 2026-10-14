@@ -3,14 +3,34 @@
 import {
   type AnyNode,
   type AnyNodeId,
+  cornerPair,
+  fusesAtCorner,
+  runAsSingleSceneHistoryStep,
+  scriptImages,
   useInteractive,
   useScene,
-  WindowNode,
+  type WindowNode,
 } from '@pascal-app/core'
+import { isAgentRefusal } from '@pascal-app/core/agent-tools'
+import {
+  cornerPartnerUpdates,
+  cornerSideWidth,
+  getWindowStyleOverrides,
+  SHAPED_WINDOW_TYPES,
+  SILLLESS_WINDOW_TYPES,
+  unwrapCorner,
+  WINDOW_STYLE_CHOICES,
+  WINDOW_STYLE_LABELS,
+  windowStylesOf,
+  windowTakesStyle,
+  windowTypeChange,
+  wrapCorner,
+} from '@pascal-app/core/building'
 import {
   ActionButton,
   ActionGroup,
   cn,
+  duplicateNodeAndPickUp,
   PanelSection,
   PanelWrapper,
   SegmentedControl,
@@ -18,11 +38,16 @@ import {
   ToggleControl,
   triggerSFX,
   useEditor,
+  writeWindowChanges,
 } from '@pascal-app/editor'
 import { useViewer } from '@pascal-app/viewer'
 import { Copy, FlipHorizontal2, Move, Trash2 } from 'lucide-react'
-import { useCallback, useRef } from 'react'
-import { OpeningDocumentationFields } from '../shared/opening-documentation-fields'
+import { useCallback, useEffect, useMemo } from 'react'
+import { AuthoredParams } from '../item/authored-params'
+import { constrainCurtainOpening, curtainOpeningLimits } from '../shared/curtain-opening-limits'
+import { createOpeningPropertyPreview } from '../shared/opening-property-preview'
+import { openingPropertyPreviewHost } from '../shared/opening-property-preview-host'
+import { windowTypeOptions } from './placement'
 
 function isSameWindowValue(current: unknown, next: unknown): boolean {
   if (typeof current === 'number' && typeof next === 'number') {
@@ -62,123 +87,137 @@ function normalizeWindowCornerRadii(
   return next.map((radius) => radius * scale) as [number, number, number, number]
 }
 
-function isSameRadiusTuple(
-  current: [number, number, number, number],
-  next: [number, number, number, number],
-) {
-  return current.every((value, index) => Math.abs(value - (next[index] ?? 0)) < 1e-6)
+/** The Corner section's pill buttons: a token hover, the press, the keyboard focus ring. */
+const CORNER_BUTTON =
+  'outline-hidden transition-[background-color,scale] duration-150 hover:bg-foreground/[0.06] focus-visible:outline-2 focus-visible:outline-foreground/50 focus-visible:outline-offset-2 motion-safe:active:scale-[0.96]'
+
+/** A change to one side of a corner window that both share, made on its partner too. */
+function syncCornerPartner(windowId: string, updates: Partial<WindowNode>) {
+  const scene = useScene.getState()
+  const partnerUpdate = cornerPartnerUpdates(scene.nodes, windowId, updates)
+  const partnerId = (scene.nodes[windowId as AnyNodeId] as WindowNode | undefined)?.corner
+    ?.partnerId
+  if (!partnerUpdate || !partnerId) return
+  scene.updateNode(partnerId as AnyNodeId, partnerUpdate)
+  scene.dirtyNodes.add(partnerId as AnyNodeId)
+  const parentId = scene.nodes[partnerId as AnyNodeId]?.parentId
+  if (parentId) scene.dirtyNodes.add(parentId as AnyNodeId)
 }
-
-const windowTypeOptions: Array<{ label: string; value: WindowNode['windowType'] }> = [
-  { label: 'Fixed', value: 'fixed' },
-  { label: 'Sliding', value: 'sliding' },
-  { label: 'Casement', value: 'casement' },
-  { label: 'Awning', value: 'awning' },
-  { label: 'Single Hung', value: 'single-hung' },
-  { label: 'Double Hung', value: 'double-hung' },
-  { label: 'Bay', value: 'bay' },
-  { label: 'Bow', value: 'bow' },
-  { label: 'Louvered', value: 'louvered' },
-]
-
-const shapedWindowTypes = new Set<WindowNode['windowType']>([
-  'fixed',
-  'casement',
-  'awning',
-  'hopper',
-  'louvered',
-])
-
-const silllessWindowTypes = new Set<WindowNode['windowType']>(['bay', 'bow'])
 
 export default function WindowPanel() {
   const selectedId = useViewer((s) => s.selection.selectedIds[0])
   const setSelection = useViewer((s) => s.setSelection)
   const deleteNode = useScene((s) => s.deleteNode)
   const setMovingNode = useEditor((s) => s.setMovingNode)
-  const previewRef = useRef<{
-    id: AnyNodeId
-    key: keyof WindowNode
-    value: unknown
-  } | null>(null)
+  const preview = useMemo(
+    () =>
+      selectedId
+        ? createOpeningPropertyPreview<WindowNode>(
+            selectedId as AnyNodeId,
+            openingPropertyPreviewHost,
+          )
+        : null,
+    [selectedId],
+  )
+  useEffect(() => () => preview?.cancel(), [preview])
 
   const node = useScene((s) =>
     selectedId ? (s.nodes[selectedId as AnyNode['id']] as WindowNode | undefined) : undefined,
   )
 
-  // Panel slider-drag fix recipe (plans/editor-node-registry.md). Without
-  // it, the 15+ SliderControls in this panel would loop on drag.
+  // Stable handler refs ("Custom panels" in wiki/architecture/node-definitions.md).
+  // Without them, the 15+ SliderControls in this panel would loop on drag.
   const handleUpdate = useCallback(
     (updates: Partial<WindowNode>) => {
       if (!selectedId) return
       const liveNode = useScene.getState().nodes[selectedId as AnyNodeId]
       if (liveNode?.type !== 'window') return
 
+      updates = constrainCurtainOpening(liveNode, updates, useScene.getState().nodes)
       const hasChange = Object.entries(updates).some(([key, value]) => {
         const currentValue = liveNode[key as keyof WindowNode]
         return !isSameWindowValue(currentValue, value)
       })
       if (!hasChange) return
 
-      useScene.getState().updateNode(selectedId as AnyNode['id'], updates)
-      const scene = useScene.getState()
-      scene.dirtyNodes.add(selectedId as AnyNodeId)
-      if (liveNode.parentId) scene.dirtyNodes.add(liveNode.parentId as AnyNodeId)
-    },
-    [selectedId],
-  )
-
-  const previewWindowUpdate = useCallback(
-    <K extends keyof WindowNode>(key: K, value: WindowNode[K]) => {
-      if (!selectedId) return
-      const liveNode = useScene.getState().nodes[selectedId as AnyNodeId]
-      if (liveNode?.type !== 'window') return
-
-      if (
-        !(
-          previewRef.current &&
-          previewRef.current.id === selectedId &&
-          previewRef.current.key === key
-        )
-      ) {
-        previewRef.current = {
-          id: selectedId as AnyNodeId,
-          key,
-          value: liveNode[key],
-        }
-      }
-
-      if (isSameWindowValue(liveNode[key], value)) return
-
-      ;(liveNode as WindowNode)[key] = value
-      useScene.getState().dirtyNodes.add(selectedId as AnyNodeId)
-    },
-    [selectedId],
-  )
-
-  const commitWindowPreview = useCallback(
-    <K extends keyof WindowNode>(key: K, value: WindowNode[K]) => {
-      if (!selectedId) return
-
-      const scene = useScene.getState()
-      const liveNode = scene.nodes[selectedId as AnyNodeId]
-      const preview = previewRef.current
-      if (liveNode?.type === 'window' && preview?.id === selectedId && preview.key === key) {
-        ;(liveNode as WindowNode)[key] = preview.value as WindowNode[K]
+      // A corner window's partner follows in the same undo step, so undo never splits the pair.
+      runAsSingleSceneHistoryStep(useScene, () => {
+        useScene.getState().updateNode(selectedId as AnyNode['id'], updates)
+        const scene = useScene.getState()
         scene.dirtyNodes.add(selectedId as AnyNodeId)
-      }
-      previewRef.current = null
-
-      useScene.getState().updateNode(
-        selectedId as AnyNode['id'],
-        {
-          [key]: value,
-        } as Partial<WindowNode>,
-      )
-      scene.dirtyNodes.add(selectedId as AnyNodeId)
+        if (liveNode.parentId) scene.dirtyNodes.add(liveNode.parentId as AnyNodeId)
+        syncCornerPartner(selectedId, updates)
+      })
     },
     [selectedId],
   )
+
+  // A corner window's sides: its partner, and whether this window can wrap its corner. Planned
+  // when the window, its wall or its partner changes, not on every scene update.
+  const hostWall = useScene((s) =>
+    node?.parentId ? s.nodes[node.parentId as AnyNodeId] : undefined,
+  )
+  const cornerPartner = useScene((s) => {
+    const partner = node?.corner ? s.nodes[node.corner.partnerId as AnyNodeId] : undefined
+    return partner?.type === 'window' ? (partner as WindowNode) : undefined
+  })
+  const cornerState = useMemo(() => {
+    // Read from the scene below; these only say when to plan again.
+    void hostWall
+    void cornerPartner
+    if (node?.type !== 'window') return 'none'
+    const nodes = useScene.getState().nodes
+    if (cornerPair(nodes, node)) return 'paired'
+    // Within 0.30 m of a corner, not only at it: the window waiting there is adopted, or a partner made.
+    try {
+      wrapCorner(nodes, node.id)
+      return 'wrappable'
+    } catch (error) {
+      if (isAgentRefusal(error)) return 'none'
+      throw error
+    }
+  }, [node, hostWall, cornerPartner])
+  const corner =
+    cornerState === 'paired' && cornerPartner
+      ? { paired: true as const, partner: cornerPartner }
+      : cornerState === 'wrappable'
+        ? { paired: false as const }
+        : null
+  const writeWindows = (updates: Record<string, Partial<WindowNode>>) =>
+    writeWindowChanges({ create: null, updates, remove: [] })
+  const wrapTheCorner = () => {
+    if (!selectedId) return
+    try {
+      const { create, updates } = wrapCorner(useScene.getState().nodes, selectedId)
+      writeWindowChanges({ create, updates, remove: [] })
+    } catch (error) {
+      // The scene changed since the panel offered it: the window stays as it is.
+      if (!isAgentRefusal(error)) throw error
+    }
+  }
+  const setCornerWidth = (windowId: string, width: number) => {
+    const update = cornerSideWidth(useScene.getState().nodes, windowId, width)
+    if (update) writeWindows({ [windowId]: update })
+  }
+  const setCornerPost = (post: 'none' | 'post') => {
+    if (!(selectedId && corner?.paired && node?.corner)) return
+    writeWindows({
+      [selectedId]: { corner: { ...node.corner, post } },
+      [corner.partner.id]: { corner: { ...corner.partner.corner!, post } },
+    })
+  }
+
+  const previewWindowUpdate = <K extends keyof WindowNode>(key: K, value: WindowNode[K]) =>
+    preview?.preview({ [key]: value } as Partial<WindowNode>)
+  // A committed change a corner window shares with its partner (its height, frame, sill) takes the
+  // partner along, in the same undo step.
+  const commitPreview = (updates: Partial<WindowNode>) =>
+    runAsSingleSceneHistoryStep(useScene, () => {
+      preview?.commit(updates)
+      if (selectedId) syncCornerPartner(selectedId, updates)
+    })
+  const commitWindowPreview = <K extends keyof WindowNode>(key: K, value: WindowNode[K]) =>
+    commitPreview({ [key]: value } as Partial<WindowNode>)
 
   const handleClose = useCallback(() => {
     setSelection({ selectedIds: [] })
@@ -208,53 +247,12 @@ export default function WindowPanel() {
   }, [selectedId, node, deleteNode, setSelection])
 
   const handleDuplicate = useCallback(() => {
-    if (!node?.parentId) return
-    triggerSFX('sfx:item-pick')
-    useScene.temporal.getState().pause()
-    const duplicate = WindowNode.parse({
-      position: [...node.position] as [number, number, number],
-      rotation: [...node.rotation] as [number, number, number],
-      side: node.side,
-      wallId: node.wallId,
-      dormerId: node.dormerId,
-      dormerFace: node.dormerFace,
-      roofSegmentId: node.roofSegmentId,
-      roofFace: node.roofFace,
-      parentId: node.parentId,
-      width: node.width,
-      height: node.height,
-      roughOpeningWidth: node.roughOpeningWidth,
-      roughOpeningHeight: node.roughOpeningHeight,
-      windowType: node.windowType,
-      operationState: node.operationState,
-      awningDirection: node.awningDirection,
-      casementStyle: node.casementStyle,
-      hingesSide: node.hingesSide,
-      frameThickness: node.frameThickness,
-      frameDepth: node.frameDepth,
-      openingKind: node.openingKind,
-      openingShape: node.openingShape,
-      openingRadiusMode: node.openingRadiusMode ?? 'all',
-      openingCornerRadii: [...(node.openingCornerRadii ?? [0.15, 0.15, 0.15, 0.15])],
-      cornerRadius: node.cornerRadius,
-      archHeight: node.archHeight,
-      openingRevealRadius: node.openingRevealRadius,
-      columnRatios: [...node.columnRatios],
-      rowRatios: [...node.rowRatios],
-      columnDividerThickness: node.columnDividerThickness,
-      rowDividerThickness: node.rowDividerThickness,
-      sill: node.sill,
-      sillDepth: node.sillDepth,
-      sillThickness: node.sillThickness,
-      metadata: { isNew: true },
-    })
-    useScene.getState().createNode(duplicate, node.parentId as AnyNodeId)
-    setMovingNode(duplicate)
-    setSelection({ selectedIds: [] })
-  }, [node, setMovingNode, setSelection])
+    if (node) duplicateNodeAndPickUp(node)
+  }, [node])
 
   if (!(node && node.type === 'window' && selectedId)) return null
 
+  const limits = curtainOpeningLimits(node, useScene.getState().nodes)
   const numCols = node.columnRatios.length
   const numRows = node.rowRatios.length
 
@@ -263,6 +261,8 @@ export default function WindowPanel() {
   const normCols = node.columnRatios.map((r) => r / colSum)
   const normRows = node.rowRatios.map((r) => r / rowSum)
   const isOpening = node.openingKind === 'opening'
+  // Built from a script: its params replace the parametric frame's fields, as on an authored item.
+  const scripted = Boolean(node.source)
   const openingShape = node.openingShape ?? 'rectangle'
   const windowShape =
     openingShape === 'arch' || openingShape === 'rounded' ? openingShape : 'rectangle'
@@ -284,18 +284,20 @@ export default function WindowPanel() {
     windowType === 'hopper' ||
     windowType === 'louvered'
   const isOperableWindow = isTrackSashWindow || isOperableSashWindow
-  const supportsWindowShape = shapedWindowTypes.has(node.windowType ?? 'fixed')
+  const supportsWindowShape = SHAPED_WINDOW_TYPES.has(node.windowType ?? 'fixed')
   const supportsGrid = isFixedWindow
-  const supportsSill = !silllessWindowTypes.has(node.windowType)
-  const showWindowTypeSection = !isOpening
-  const showWindowShapeSection = !isOpening && supportsWindowShape
-  const showOpeningShapeSection = isOpening
-  const showFrameSection = !isOpening
-  const showGridSection = !isOpening && supportsGrid
-  const showSillSection = !isOpening && supportsSill
-  const showOperationSection = !isOpening && isOperableWindow
-  const showAwningDirectionSection = !isOpening && displayedWindowType === 'awning'
-  const showCasementSection = !isOpening && windowType === 'casement'
+  const supportsSill = !SILLLESS_WINDOW_TYPES.has(node.windowType)
+  const showWindowTypeSection = !scripted && !isOpening
+  const windowStyles = windowStylesOf(node)
+  const showWindowShapeSection = !scripted && !isOpening && supportsWindowShape
+  const showOpeningShapeSection = !scripted && isOpening
+  const showFrameSection = !scripted && !isOpening
+  const showGridSection = !scripted && !isOpening && supportsGrid
+  const showStyleSection = !scripted && !isOpening && windowTakesStyle(node.windowType)
+  const showSillSection = !scripted && !isOpening && supportsSill
+  const showOperationSection = !scripted && !isOpening && isOperableWindow
+  const showAwningDirectionSection = !scripted && !isOpening && displayedWindowType === 'awning'
+  const showCasementSection = !scripted && !isOpening && windowType === 'casement'
   const showFlipSide = !isOpening
   const operationLabel = isTrackSashWindow
     ? windowType === 'sliding'
@@ -320,31 +322,24 @@ export default function WindowPanel() {
 
     if (openingShape === 'rounded') {
       if (openingRadiusMode === 'individual') {
-        const currentRadii = openingCornerRadii as [number, number, number, number]
         const nextRadii = normalizeWindowCornerRadii(
           openingCornerRadii as [number, number, number, number],
           nextWidth,
           nextHeight,
         )
-        if (!isSameRadiusTuple(currentRadii, nextRadii)) {
-          nextUpdates.openingCornerRadii = nextRadii
-        }
+        nextUpdates.openingCornerRadii = nextRadii
       } else {
         const nextRadius = Math.min(
           Math.max(cornerRadius, 0),
           getMaxSharedWindowRadius(nextWidth, nextHeight),
         )
-        if (Math.abs(nextRadius - cornerRadius) > 1e-6) {
-          nextUpdates.cornerRadius = nextRadius
-        }
+        nextUpdates.cornerRadius = nextRadius
       }
     }
 
     if (openingShape === 'arch') {
       const nextArchHeight = Math.min(Math.max(archHeight, 0.05), Math.max(nextHeight, 0.05))
-      if (Math.abs(nextArchHeight - archHeight) > 1e-6) {
-        nextUpdates.archHeight = nextArchHeight
-      }
+      nextUpdates.archHeight = nextArchHeight
     }
 
     return nextUpdates
@@ -388,50 +383,37 @@ export default function WindowPanel() {
 
   return (
     <PanelWrapper
-      icon="/icons/window.webp"
+      icon={scriptImages(node)?.thumbnail ?? '/icons/window.webp'}
       onClose={handleClose}
       title={node.name || 'Window'}
       width={320}
     >
-      <PanelSection title="Type">
-        <SegmentedControl
-          onChange={(value) =>
-            handleUpdate({
-              openingKind: value as WindowNode['openingKind'],
-              ...(value === 'opening'
-                ? {
-                    openingShape,
-                    openingRadiusMode,
-                    openingCornerRadii,
-                    cornerRadius,
-                    archHeight,
-                    openingRevealRadius,
-                  }
-                : {}),
-            })
-          }
-          options={[
-            { value: 'window', label: 'Window' },
-            { value: 'opening', label: 'Opening' },
-          ]}
-          value={node.openingKind ?? 'window'}
-        />
-      </PanelSection>
-
-      <PanelSection title="Documentation">
-        <OpeningDocumentationFields
-          constructionType={node.constructionType}
-          dimensionReference={node.dimensionReference}
-          finishOpeningHeight={node.finishOpeningHeight}
-          finishOpeningWidth={node.finishOpeningWidth}
-          mark={node.mark}
-          masonryOpeningHeight={node.masonryOpeningHeight}
-          masonryOpeningWidth={node.masonryOpeningWidth}
-          onChange={handleUpdate}
-          roughOpeningHeight={node.roughOpeningHeight}
-          roughOpeningWidth={node.roughOpeningWidth}
-        />
-      </PanelSection>
+      {!scripted && (
+        <PanelSection title="Type">
+          <SegmentedControl
+            onChange={(value) =>
+              handleUpdate({
+                openingKind: value as WindowNode['openingKind'],
+                ...(value === 'opening'
+                  ? {
+                      openingShape,
+                      openingRadiusMode,
+                      openingCornerRadii,
+                      cornerRadius,
+                      archHeight,
+                      openingRevealRadius,
+                    }
+                  : {}),
+              })
+            }
+            options={[
+              { value: 'window', label: 'Window' },
+              { value: 'opening', label: 'Opening' },
+            ]}
+            value={node.openingKind ?? 'window'}
+          />
+        </PanelSection>
+      )}
 
       {showWindowTypeSection && (
         <PanelSection title="Window Type">
@@ -444,17 +426,13 @@ export default function WindowPanel() {
                     'flex min-h-12 items-center rounded-lg border px-3 py-2.5 text-left text-xs transition-colors',
                     isSelected
                       ? 'border-orange-400/60 bg-orange-400/10 text-foreground'
-                      : 'border-border/50 bg-[#2C2C2E] text-muted-foreground hover:bg-[#3e3e3e] hover:text-foreground',
+                      : 'border-border/50 bg-black/4 dark:bg-[#2C2C2E] text-muted-foreground hover:bg-black/8 dark:hover:bg-[#3e3e3e] hover:text-foreground',
                   )}
                   key={option.value}
                   onClick={() =>
                     handleUpdate({
-                      windowType: option.value,
+                      ...windowTypeChange(node, option.value),
                       ...(option.value === 'awning' ? { awningDirection } : {}),
-                      ...(!shapedWindowTypes.has(option.value)
-                        ? { openingShape: 'rectangle' }
-                        : {}),
-                      ...(silllessWindowTypes.has(option.value) ? { sill: false } : {}),
                     })
                   }
                   type="button"
@@ -524,19 +502,117 @@ export default function WindowPanel() {
         </PanelSection>
       )}
 
+      {showStyleSection && (
+        <PanelSection title="Style">
+          <div className="grid grid-cols-2 gap-2 px-1 pt-1">
+            {WINDOW_STYLE_CHOICES.map((style) => (
+              <button
+                aria-pressed={windowStyles.includes(style)}
+                className={cn(
+                  'flex min-h-10 items-center rounded-lg border px-3 py-2 text-left text-xs transition-colors',
+                  windowStyles.includes(style)
+                    ? 'border-orange-400/60 bg-orange-400/10 text-foreground'
+                    : 'border-border/50 bg-black/4 dark:bg-[#2C2C2E] text-muted-foreground hover:bg-black/8 dark:hover:bg-[#3e3e3e] hover:text-foreground',
+                )}
+                key={style}
+                onClick={() => handleUpdate(getWindowStyleOverrides(style))}
+                type="button"
+              >
+                <span className="truncate font-medium">{WINDOW_STYLE_LABELS[style]}</span>
+              </button>
+            ))}
+          </div>
+          {!windowStyles.length && (
+            <p className="px-1 pt-2 text-muted-foreground text-xs">
+              Custom: the panes match no style.
+            </p>
+          )}
+        </PanelSection>
+      )}
+
+      {corner && (
+        <PanelSection title="Corner">
+          {corner.paired ? (
+            <div className="flex flex-col gap-2 px-1 pb-1">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="text-muted-foreground">
+                  Wraps the corner with {corner.partner.name || 'its partner'}
+                </span>
+                <button
+                  className={cn(
+                    'rounded-full border border-border/50 px-3 py-1 text-xs',
+                    CORNER_BUTTON,
+                  )}
+                  onClick={() =>
+                    selectedId && writeWindows(unwrapCorner(useScene.getState().nodes, selectedId))
+                  }
+                  type="button"
+                >
+                  Unwrap
+                </button>
+              </div>
+              <SliderControl
+                label="This side"
+                min={0.1}
+                onChange={(v) => selectedId && setCornerWidth(selectedId, v)}
+                precision={2}
+                step={0.05}
+                unit="m"
+                value={node.width}
+              />
+              <SliderControl
+                label="Other side"
+                min={0.1}
+                onChange={(v) => setCornerWidth(corner.partner.id, v)}
+                precision={2}
+                step={0.05}
+                unit="m"
+                value={corner.partner.width}
+              />
+              {/* Only a fixed window's glass fuses; the other types' frames meet at the corner. */}
+              {fusesAtCorner(node) && (
+                <SegmentedControl
+                  onChange={setCornerPost}
+                  options={[
+                    { label: 'Fused glass', value: 'none' },
+                    { label: 'Corner post', value: 'post' },
+                  ]}
+                  value={node.corner?.post ?? 'none'}
+                />
+              )}
+            </div>
+          ) : (
+            <div className="px-1 pb-1">
+              <button
+                className={cn(
+                  'w-full rounded-full border border-border/50 px-3 py-2 text-xs',
+                  CORNER_BUTTON,
+                )}
+                onClick={wrapTheCorner}
+                type="button"
+              >
+                Wrap the corner
+              </button>
+            </div>
+          )}
+        </PanelSection>
+      )}
+
       <PanelSection title="Position">
-        <SliderControl
-          label={
-            <>
-              X<sub className="ml-[1px] text-[11px] opacity-70">pos</sub>
-            </>
-          }
-          onChange={(v) => handleUpdate({ position: [v, node.position[1], node.position[2]] })}
-          precision={2}
-          step={0.1}
-          unit="m"
-          value={Math.round(node.position[0] * 100) / 100}
-        />
+        {!corner?.paired && (
+          <SliderControl
+            label={
+              <>
+                X<sub className="ml-[1px] text-[11px] opacity-70">pos</sub>
+              </>
+            }
+            onChange={(v) => handleUpdate({ position: [v, node.position[1], node.position[2]] })}
+            precision={2}
+            step={0.1}
+            unit="m"
+            value={node.position[0]}
+          />
+        )}
         <SliderControl
           label={
             <>
@@ -547,7 +623,7 @@ export default function WindowPanel() {
           precision={2}
           step={0.1}
           unit="m"
-          value={Math.round(node.position[1] * 100) / 100}
+          value={node.position[1]}
         />
         {showFlipSide && (
           <div className="px-1 pt-2 pb-1">
@@ -561,28 +637,47 @@ export default function WindowPanel() {
         )}
       </PanelSection>
 
-      <PanelSection title="Dimensions">
-        <SliderControl
-          label="Width"
-          min={0}
-          onChange={(v) => handleUpdate(getDimensionUpdates({ width: v }))}
-          precision={2}
-          restoreOnCommit={false}
-          step={0.1}
-          unit="m"
-          value={Math.round(node.width * 100) / 100}
-        />
-        <SliderControl
-          label="Height"
-          min={0}
-          onChange={(v) => handleUpdate(getDimensionUpdates({ height: v }))}
-          precision={2}
-          restoreOnCommit={false}
-          step={0.1}
-          unit="m"
-          value={Math.round(node.height * 100) / 100}
-        />
-      </PanelSection>
+      {scripted && <AuthoredParams node={node} />}
+
+      {!scripted && (
+        <PanelSection title="Dimensions">
+          {limits && (
+            <p className="text-[11px] text-muted-foreground">
+              Size is limited to the wall, including clearance for the opening frame.
+            </p>
+          )}
+          {!corner?.paired && (
+            <SliderControl
+              label="Width"
+              max={limits?.width}
+              min={0.01}
+              onChange={(v) => preview?.preview(getDimensionUpdates({ width: v }))}
+              onCommit={(v) => preview?.commit(getDimensionUpdates({ width: v }))}
+              onCancel={() => preview?.cancel()}
+              previewWhileTyping
+              precision={2}
+              restoreOnCommit={false}
+              step={0.01}
+              unit="m"
+              value={node.width}
+            />
+          )}
+          <SliderControl
+            label="Height"
+            max={limits?.height}
+            min={0.01}
+            onChange={(v) => preview?.preview(getDimensionUpdates({ height: v }))}
+            onCommit={(v) => commitPreview(getDimensionUpdates({ height: v }))}
+            onCancel={() => preview?.cancel()}
+            previewWhileTyping
+            precision={2}
+            restoreOnCommit={false}
+            step={0.01}
+            unit="m"
+            value={node.height}
+          />
+        </PanelSection>
+      )}
 
       {showWindowShapeSection && (
         <PanelSection title="Top Shape">
@@ -628,10 +723,13 @@ export default function WindowPanel() {
                   min={0}
                   onChange={(value) => previewWindowUpdate('cornerRadius', value)}
                   onCommit={(value) => commitWindowPreview('cornerRadius', value)}
+                  onCancel={() => preview?.cancel()}
+                  previewWhileTyping
+                  restoreOnCommit={false}
                   precision={2}
                   step={0.05}
                   unit="m"
-                  value={Math.round(cornerRadius * 100) / 100}
+                  value={cornerRadius}
                 />
               ) : (
                 <>
@@ -648,10 +746,13 @@ export default function WindowPanel() {
                       min={0}
                       onChange={(value) => setOpeningCornerRadius(index as number, value)}
                       onCommit={(value) => setOpeningCornerRadius(index as number, value, true)}
+                      onCancel={() => preview?.cancel()}
+                      previewWhileTyping
+                      restoreOnCommit={false}
                       precision={2}
                       step={0.05}
                       unit="m"
-                      value={Math.round((openingCornerRadii[index as number] ?? 0) * 100) / 100}
+                      value={openingCornerRadii[index as number] ?? 0}
                     />
                   ))}
                 </>
@@ -662,10 +763,13 @@ export default function WindowPanel() {
                 min={0}
                 onChange={(value) => previewWindowUpdate('openingRevealRadius', value)}
                 onCommit={(value) => commitWindowPreview('openingRevealRadius', value)}
+                onCancel={() => preview?.cancel()}
+                previewWhileTyping
+                restoreOnCommit={false}
                 precision={3}
                 step={0.005}
                 unit="m"
-                value={Math.round(openingRevealRadius * 1000) / 1000}
+                value={openingRevealRadius}
               />
             </div>
           )}
@@ -675,12 +779,15 @@ export default function WindowPanel() {
                 label="Arch Height"
                 max={Math.max(0.05, node.height)}
                 min={0.05}
-                onChange={(value) => handleUpdate({ archHeight: value })}
+                onChange={(value) => previewWindowUpdate('archHeight', value)}
+                onCommit={(value) => commitWindowPreview('archHeight', value)}
+                onCancel={() => preview?.cancel()}
+                previewWhileTyping
                 precision={2}
                 restoreOnCommit={false}
                 step={0.05}
                 unit="m"
-                value={Math.round(archHeight * 100) / 100}
+                value={archHeight}
               />
             </div>
           )}
@@ -719,10 +826,13 @@ export default function WindowPanel() {
                   min={0}
                   onChange={(value) => previewWindowUpdate('cornerRadius', value)}
                   onCommit={(value) => commitWindowPreview('cornerRadius', value)}
+                  onCancel={() => preview?.cancel()}
+                  previewWhileTyping
+                  restoreOnCommit={false}
                   precision={2}
                   step={0.05}
                   unit="m"
-                  value={Math.round(cornerRadius * 100) / 100}
+                  value={cornerRadius}
                 />
               ) : (
                 <>
@@ -739,10 +849,13 @@ export default function WindowPanel() {
                       min={0}
                       onChange={(value) => setOpeningCornerRadius(index as number, value)}
                       onCommit={(value) => setOpeningCornerRadius(index as number, value, true)}
+                      onCancel={() => preview?.cancel()}
+                      previewWhileTyping
+                      restoreOnCommit={false}
                       precision={2}
                       step={0.05}
                       unit="m"
-                      value={Math.round((openingCornerRadii[index as number] ?? 0) * 100) / 100}
+                      value={openingCornerRadii[index as number] ?? 0}
                     />
                   ))}
                 </>
@@ -753,10 +866,13 @@ export default function WindowPanel() {
                 min={0}
                 onChange={(value) => previewWindowUpdate('openingRevealRadius', value)}
                 onCommit={(value) => commitWindowPreview('openingRevealRadius', value)}
+                onCancel={() => preview?.cancel()}
+                previewWhileTyping
+                restoreOnCommit={false}
                 precision={3}
                 step={0.005}
                 unit="m"
-                value={Math.round(openingRevealRadius * 1000) / 1000}
+                value={openingRevealRadius}
               />
             </div>
           )}
@@ -766,39 +882,50 @@ export default function WindowPanel() {
                 label="Arch Height"
                 max={Math.max(0.05, node.height)}
                 min={0.05}
-                onChange={(value) => handleUpdate({ archHeight: value })}
+                onChange={(value) => previewWindowUpdate('archHeight', value)}
+                onCommit={(value) => commitWindowPreview('archHeight', value)}
+                onCancel={() => preview?.cancel()}
+                previewWhileTyping
                 precision={2}
                 restoreOnCommit={false}
                 step={0.05}
                 unit="m"
-                value={Math.round(archHeight * 100) / 100}
+                value={archHeight}
               />
             </div>
           )}
         </PanelSection>
       )}
 
-      {!isOpening && (
+      {!isOpening && !scripted && (
         <>
           {showFrameSection && (
             <PanelSection title="Frame">
               <SliderControl
                 label="Thickness"
                 min={0}
-                onChange={(v) => handleUpdate({ frameThickness: v })}
+                onChange={(v) => previewWindowUpdate('frameThickness', v)}
+                onCommit={(v) => commitWindowPreview('frameThickness', v)}
+                onCancel={() => preview?.cancel()}
+                previewWhileTyping
+                restoreOnCommit={false}
                 precision={3}
                 step={0.01}
                 unit="m"
-                value={Math.round(node.frameThickness * 1000) / 1000}
+                value={node.frameThickness}
               />
               <SliderControl
                 label="Depth"
                 min={0}
-                onChange={(v) => handleUpdate({ frameDepth: v })}
+                onChange={(v) => previewWindowUpdate('frameDepth', v)}
+                onCommit={(v) => commitWindowPreview('frameDepth', v)}
+                onCancel={() => preview?.cancel()}
+                previewWhileTyping
+                restoreOnCommit={false}
                 precision={3}
                 step={0.01}
                 unit="m"
-                value={Math.round(node.frameDepth * 1000) / 1000}
+                value={node.frameDepth}
               />
             </PanelSection>
           )}
@@ -857,7 +984,7 @@ export default function WindowPanel() {
                       precision={3}
                       step={0.01}
                       unit="m"
-                      value={Math.round((node.columnDividerThickness ?? 0.03) * 1000) / 1000}
+                      value={node.columnDividerThickness ?? 0.03}
                     />
                   </div>
                 </div>
@@ -890,7 +1017,7 @@ export default function WindowPanel() {
                       precision={3}
                       step={0.01}
                       unit="m"
-                      value={Math.round((node.rowDividerThickness ?? 0.03) * 1000) / 1000}
+                      value={node.rowDividerThickness ?? 0.03}
                     />
                   </div>
                 </div>
@@ -914,7 +1041,7 @@ export default function WindowPanel() {
                     precision={3}
                     step={0.01}
                     unit="m"
-                    value={Math.round(node.sillDepth * 1000) / 1000}
+                    value={node.sillDepth}
                   />
                   <SliderControl
                     label="Thickness"
@@ -923,7 +1050,7 @@ export default function WindowPanel() {
                     precision={3}
                     step={0.01}
                     unit="m"
-                    value={Math.round(node.sillThickness * 1000) / 1000}
+                    value={node.sillThickness}
                   />
                 </div>
               )}
@@ -942,7 +1069,7 @@ export default function WindowPanel() {
           />
           <ActionButton
             className="hover:bg-red-500/20"
-            icon={<Trash2 className="h-3.5 w-3.5 text-red-400" />}
+            icon={<Trash2 className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />}
             label="Delete"
             onClick={handleDelete}
           />

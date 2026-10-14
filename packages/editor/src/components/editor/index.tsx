@@ -19,14 +19,18 @@ import {
   SceneEnvironment,
   useViewer,
   Viewer,
+  type ViewerImmersiveSession,
+  ViewerPresentations,
 } from '@pascal-app/viewer'
 import {
+  type CSSProperties,
   memo,
   Profiler,
   type ProfilerOnRenderCallback,
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react'
@@ -34,7 +38,20 @@ import { ViewerOverlay } from '../../components/viewer-overlay'
 import { ViewerZoneSystem } from '../../components/viewer-zone-system'
 import { type SaveStatus, useAutoSave } from '../../hooks/use-auto-save'
 import { useKeyboard } from '../../hooks/use-keyboard'
+import { useIsMobile } from '../../hooks/use-mobile'
+import { useSaveShortcut } from '../../hooks/use-save-shortcut'
+import { useCeilingEditSessionOwner } from '../../lib/ceiling-edit-session'
+import { showsWholeBuilding, useEditorLevelDisplay } from '../../lib/editor-level-display'
+import { isSceneView } from '../../lib/editor-views'
+import { useGestureLifecycleOwner } from '../../lib/gesture-lifecycle'
+import { shouldShowEditingControls } from '../../lib/interaction/overlay-policy'
+import {
+  createLocalProjectPresentationPersistence,
+  type LocalProjectPresentationPersistence,
+} from '../../lib/local-project-presentation-persistence'
 import { type ActivePaintMaterial, hasActivePaintMaterial } from '../../lib/material-paint'
+import { usePaintRegionHovering } from '../../lib/paint-region-hover'
+import { resetPaintMode, usePaintRegionMode } from '../../lib/paint-region-mode'
 import {
   applySceneGraphToEditor,
   loadSceneFromLocalStorage,
@@ -42,6 +59,9 @@ import {
   writePersistedSelection,
 } from '../../lib/scene'
 import { disposeSFXBus, initSFXBus } from '../../lib/sfx-bus'
+import { useUnitFocusRules } from '../../lib/units'
+import { cn } from '../../lib/utils'
+import { useViewerFloorDisplay } from '../../lib/viewer-selection'
 import {
   type HostNodeActions,
   setHostNodeActions,
@@ -50,16 +70,18 @@ import { type CameraHintAction, useCameraHintFocus } from '../../store/use-camer
 import useEditor from '../../store/use-editor'
 import useFloorplanMode from '../../store/use-floorplan-mode'
 import useSessionGroups from '../../store/use-session-groups'
+import { paneOfView, VIEW_2D, VIEW_3D, type ViewPaneIndex } from '../../store/view-layout'
+import { PointAskLayer } from '../point-ask/point-ask-layer'
 import { CeilingSelectionAffordanceSystem } from '../systems/ceiling/ceiling-selection-affordance-system'
 import { CeilingSystem } from '../systems/ceiling/ceiling-system'
 import { RoofEditSystem } from '../systems/roof/roof-edit-system'
 import { SelectionAffordanceManager } from '../systems/selection-affordance-manager'
 import { StairEditSystem } from '../systems/stair/stair-edit-system'
-import { ZoneLabelEditorSystem } from '../systems/zone/zone-label-editor-system'
 import { ZoneSystem } from '../systems/zone/zone-system'
 import { BoxSelectTool } from '../tools/select/box-select-tool'
 import { ToolManager } from '../tools/tool-manager'
 import { ActionMenu } from '../ui/action-menu'
+import { type ActionMenuPlacement, TOP_MENU_CLEARANCE } from '../ui/action-menu/placement'
 import { CommandPalette, type CommandPaletteEmptyAction } from '../ui/command-palette'
 import { EditorCommands } from '../ui/command-palette/editor-commands'
 import { FloatingLevelSelector } from '../ui/floating-level-selector'
@@ -68,6 +90,7 @@ import { PanelManager } from '../ui/panels/panel-manager'
 import { ErrorBoundary } from '../ui/primitives/error-boundary'
 import { useSidebarStore } from '../ui/primitives/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/primitives/tooltip'
+import { RightStack } from '../ui/right-stack'
 import { SceneLoader, SceneLoadFailed } from '../ui/scene-loader'
 import { AppSidebar } from '../ui/sidebar/app-sidebar'
 import type { ExtraPanel } from '../ui/sidebar/icon-rail'
@@ -75,6 +98,9 @@ import { SettingsPanel, type SettingsPanelProps } from '../ui/sidebar/panels/set
 import { SitePanel, type SitePanelProps } from '../ui/sidebar/panels/site-panel'
 import type { SidebarTab } from '../ui/sidebar/tab-bar'
 import { useHostPanels } from '../ui/sidebar/use-plugin-panels'
+import { ViewerHoverLabel } from '../viewer/viewer-hover-label'
+import { ParametricViewerRooms } from '../viewer/viewer-rooms'
+import { ViewerSelectionManager } from '../viewer/viewer-selection-manager'
 import { ViewerStage } from '../viewer/viewer-stage'
 import type { ViewerStageMode } from '../viewer/viewer-stage-modes'
 import { CaptureCameraRig } from './capture-camera-rig'
@@ -88,21 +114,30 @@ import { FloatingActionMenu } from './floating-action-menu'
 import { FloatingBuildingActionMenu } from './floating-building-action-menu'
 import { FloorplanModeCoordinator } from './floorplan-mode-coordinator'
 import { FloorplanPanel } from './floorplan-panel'
+import { FollowPascal } from './follow-pascal'
+import { FootprintHeightHandle } from './footprint-height-handle'
 import { Grid } from './grid'
 import { GroupFloatingActionMenu } from './group-floating-action-menu'
 import { GroupRotateHandle } from './group-rotate-handle'
 import { GroupSelectionBox3D } from './group-selection-box-3d'
+import { EditorHandleHitPriority } from './handles/handle-hit-priority'
 import { NodeArrowHandles } from './node-arrow-handles'
 import { QuickMeasurementHud } from './quick-measurement-hud'
 import { RiserDiagramPanel } from './riser-diagram-panel'
+import { RoomLabels3D } from './room-labels'
 import { SelectionManager } from './selection-manager'
 import { SiteEdgeLabels } from './site-edge-labels'
 import { SlabHoleHighlights } from './slab-hole-highlights'
 import { SnapshotCaptureOverlay } from './snapshot-capture-overlay'
 import { type SnapshotCameraData, ThumbnailGenerator } from './thumbnail-generator'
+import { VectorEdgeExtractor } from './vector-edge-extractor'
+import { HostView } from './views/host-view'
+import { SceneRegion } from './views/scene-region'
+import { useActiveViewLayout, useEditorViews } from './views/use-editor-views'
 import { WallMeasurementLabel } from './wall-measurement-label'
 import { WallMoveSideHandles } from './wall-move-side-handles'
 import { WallOpeningHighlights } from './wall-opening-highlights'
+import { WallRegionHandles } from './wall-region-handles'
 
 const CAMERA_CONTROLS_HINT_DISMISSED_STORAGE_KEY = 'editor-camera-controls-hint-dismissed:v1'
 const PREVIEW_STAGE_SWITCHER_POSITION =
@@ -112,10 +147,16 @@ const DELETE_CURSOR_BADGE_OFFSET_X = 14
 const DELETE_CURSOR_BADGE_OFFSET_Y = 14
 const PAINT_CURSOR_BADGE_COLOR = '#818cf8'
 const PAINT_CURSOR_BADGE_DISABLED_COLOR = '#94a3b8'
+// Neutral: erasing paints no colour.
+const ERASE_CURSOR_BADGE_COLOR = '#e4e4e7'
 const PAINT_CURSOR_BADGE_OFFSET_X = 14
 const PAINT_CURSOR_BADGE_OFFSET_Y = 14
 const SCENE_READY_FALLBACK_MS = 8000
-type PaintCursorBadgeState = 'empty' | 'ready' | 'blocked'
+const PRESENTATION_PROJECT_NOT_RESTORED = Symbol('presentation-project-not-restored')
+const useClientLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect
+// `aim`: a region sub-mode off what it draws on — the HUD says where to go; no
+// forbidden sign, since nothing is refused.
+type PaintCursorBadgeState = 'empty' | 'ready' | 'aim' | 'blocked'
 const recordEditorRender: ProfilerOnRenderCallback = (_id, _phase, actualDuration) => {
   if (PERF_OVERLAY_ENABLED) recordPerfSample('react-render', actualDuration)
 }
@@ -123,6 +164,10 @@ const EDITOR_HOVER_STYLES: HoverStyles = {
   default: { visibleColor: 0x00_aa_ff, hiddenColor: 0xf3_ff_47, strength: 5, pulse: true },
   delete: { visibleColor: 0xef_44_44, hiddenColor: 0x99_1b_1b, strength: 6, pulse: false },
   'paint-ready': { visibleColor: 0xf5_9e_0b, hiddenColor: 0xfd_e0_68, strength: 5, pulse: true },
+  // Erasing paints nothing: a neutral outline, no paint colour.
+  'erase-ready': { visibleColor: 0xe4_e4_e7, hiddenColor: 0xa1_a1_aa, strength: 5, pulse: false },
+  // Point and ask: the agent accent, steady (nothing animates a hover), the occluded parts faint.
+  point: { visibleColor: 0xa9_9b_ff, hiddenColor: 0x5b_4f_c9, strength: 5, pulse: false },
   'paint-disabled': {
     visibleColor: 0x94_a3_b8,
     hiddenColor: 0x47_55_69,
@@ -159,6 +204,8 @@ function initializeEditorRuntime(): () => void {
 export interface EditorProps {
   // Layout version — 'v1' (default) or 'v2' (navbar + two-column)
   layoutVersion?: 'v1' | 'v2'
+  // Viewport edge the tool menu docks to (desktop only; mobile stays at the bottom)
+  actionMenuPlacement?: ActionMenuPlacement
 
   // UI slots (v1)
   appMenuButton?: ReactNode
@@ -170,11 +217,20 @@ export interface EditorProps {
   viewerToolbarLeft?: ReactNode
   viewerToolbarRight?: ReactNode
   /**
-   * Full-bleed surface swapped in over the 3D canvas (v2) — e.g. the studio
-   * gallery. The canvas stays mounted underneath (no WebGL re-init) and the
-   * viewer toolbar stays on top so the host's stage switch remains reachable.
+   * Full-bleed surface swapped in over the whole stage (v2) — e.g. a builder
+   * with its own canvas. The scene stays mounted underneath (no WebGL re-init)
+   * and the view bar steps aside. Something to show *beside* the scene is a
+   * view instead (`registerEditorHostView`).
    */
   stageOverlay?: ReactNode
+  /**
+   * Chrome that belongs to the scene (v2), positioned over the 3D and 2D panes
+   * with the level selector and tool dock — e.g. a capture bar. Hidden while
+   * no scene view is on screen.
+   */
+  sceneOverlay?: ReactNode
+  /** Show each pane's view bar (v2, default true). Off for a host that presents one fixed view. */
+  viewBar?: boolean
   /**
    * Docked below the node inspector (v2). Hosts mount the "save as preset"
    * affordance here so it reads as part of the inspector surface and shows
@@ -199,8 +255,15 @@ export interface EditorProps {
   projectId?: string | null
 
   // Persistence — defaults to localStorage when omitted
+  guardAgainstSceneWipe?: boolean
   onLoad?: () => Promise<SceneGraph | null>
   onSave?: (scene: SceneGraph, options?: { keepalive?: boolean }) => Promise<void>
+  /**
+   * Cmd/Ctrl+S. Return true when the host handled the save (the community
+   * version checkpoint); anything else falls through to flushing the autosave,
+   * so the chord still saves when the host's control isn't mounted.
+   */
+  onSaveShortcut?: () => boolean | undefined
   onDirty?: () => void
   onSaveStatusChange?: (status: SaveStatus) => void
 
@@ -210,6 +273,13 @@ export interface EditorProps {
 
   // Loading indicator (e.g. project fetching in community mode)
   isLoading?: boolean
+
+  /**
+   * Replaces the loading surface in both layouts. The editor still owns when
+   * it is visible and always shows its error/retry surface when loading fails.
+   * Omit (or pass null) to use the default SceneLoader.
+   */
+  loadingSlot?: ReactNode
 
   // Fires when the full-screen scene loader shows/hides — lets hosts measure
   // open-to-interactive time without reaching into internal loader state.
@@ -225,9 +295,15 @@ export interface EditorProps {
    */
   disablePostFx?: boolean
 
+  /** Host-provided immersive XR runtime for the main 3D canvas. */
+  immersive?: ViewerImmersiveSession
+
   // Version preview overlays (rendered by host app)
   sidebarOverlay?: ReactNode
   viewerBanner?: ReactNode
+
+  /** Shown in the preview header. */
+  projectName?: string | null
 
   // Panel config (passed through to sidebar panels — v1 only)
   settingsPanelProps?: SettingsPanelProps
@@ -408,18 +484,12 @@ type CameraControlHint = {
   alternativeKeys?: ShortcutKey[]
 }
 
-const EDITOR_CAMERA_CONTROL_HINTS: CameraControlHint[] = [
+const CAMERA_CONTROL_HINTS: CameraControlHint[] = [
   {
     action: 'Pan',
     keys: [{ value: 'Space' }, { value: 'Left click' }],
     alternativeKeys: [{ value: 'Middle click' }],
   },
-  { action: 'Rotate', keys: [{ value: 'Right click' }] },
-  { action: 'Zoom', keys: [{ value: 'Scroll' }] },
-]
-
-const PREVIEW_CAMERA_CONTROL_HINTS: CameraControlHint[] = [
-  { action: 'Pan', keys: [{ value: 'Left click' }] },
   { action: 'Rotate', keys: [{ value: 'Right click' }] },
   { action: 'Zoom', keys: [{ value: 'Scroll' }] },
 ]
@@ -531,13 +601,13 @@ function CameraControlHintItem({ hint }: { hint: CameraControlHint }) {
 }
 
 function ViewerCanvasControlsHint({
-  isPreviewMode,
+  belowTopMenu = false,
   onDismiss,
 }: {
-  isPreviewMode: boolean
+  belowTopMenu?: boolean
   onDismiss: () => void
 }) {
-  const all = isPreviewMode ? PREVIEW_CAMERA_CONTROL_HINTS : EDITOR_CAMERA_CONTROL_HINTS
+  const all = CAMERA_CONTROL_HINTS
   // A host teaching one gesture at a time narrows this to the one it is asking
   // for, and to nothing once it is done. Null — the default — is all of them.
   const focus = useCameraHintFocus((state) => state.actions)
@@ -548,7 +618,13 @@ function ViewerCanvasControlsHint({
   }
 
   return (
-    <div className="pointer-events-none absolute top-14 left-1/2 z-40 max-w-[calc(100%-2rem)] -translate-x-1/2">
+    <div
+      className={cn(
+        'pointer-events-none absolute left-1/2 z-40 max-w-[calc(100%-2rem)] -translate-x-1/2',
+        !belowTopMenu && 'top-14',
+      )}
+      style={belowTopMenu ? { top: TOP_MENU_CLEARANCE } : undefined}
+    >
       <section
         aria-label="Camera controls hint"
         className="pointer-events-auto flex items-start gap-3 rounded-2xl border border-border/35 bg-background/90 px-3.5 py-2.5 shadow-elevation-4 backdrop-blur-xl"
@@ -666,26 +742,31 @@ function PaintCursorBadge({
   swatchColor,
   swatchImageUrl,
   isEraser,
+  isPicker = false,
 }: {
   position: { x: number; y: number }
   state: PaintCursorBadgeState
   swatchColor: string
   swatchImageUrl?: string
   isEraser: boolean
+  /** The eyedropper: the swatch is what a click would take. */
+  isPicker?: boolean
 }) {
   const accentColor =
     state === 'ready'
       ? isEraser
-        ? PAINT_CURSOR_BADGE_COLOR
+        ? ERASE_CURSOR_BADGE_COLOR
         : swatchColor
       : PAINT_CURSOR_BADGE_DISABLED_COLOR
-  const iconOpacity = state === 'ready' ? 1 : state === 'blocked' ? 0.62 : 0.42
+  const iconOpacity = state === 'ready' ? 1 : state === 'blocked' || state === 'aim' ? 0.62 : 0.42
   const lineHeight = 18
 
   return (
     <div
       aria-hidden="true"
       className="pointer-events-none absolute z-40"
+      data-paint-cursor-state={state}
+      data-paint-cursor-tool={isEraser ? 'erase' : isPicker ? 'pick' : 'paint'}
       style={{
         left: position.x,
         top: position.y,
@@ -707,29 +788,32 @@ function PaintCursorBadge({
           transform: `translate(-50%, calc(-100% - ${lineHeight}px))`,
         }}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          alt=""
-          aria-hidden="true"
-          className="h-5 w-5 object-contain drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]"
-          src="/icons/paint.webp"
-          style={{
-            filter: state === 'ready' ? undefined : 'grayscale(1)',
-            opacity: iconOpacity,
-          }}
-        />
-        {state === 'ready' ? (
-          isEraser ? (
-            <span className="-right-1 -bottom-1 absolute flex h-3.5 w-3.5 items-center justify-center rounded-full border border-white/35 bg-zinc-950 text-white shadow-[0_2px_6px_rgba(0,0,0,0.45)]">
-              <Icon
-                aria-hidden="true"
-                color="currentColor"
-                height={10}
-                icon="mdi:eraser-variant"
-                width={10}
-              />
-            </span>
-          ) : (
+        {isPicker || isEraser ? (
+          // The eyedropper and the eraser carry their own tool, never a paint colour.
+          <Icon
+            aria-hidden="true"
+            className="text-white"
+            color="currentColor"
+            height={18}
+            icon={isEraser ? 'mdi:eraser-variant' : 'lucide:pipette'}
+            style={{ opacity: iconOpacity }}
+            width={18}
+          />
+        ) : (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img
+            alt=""
+            aria-hidden="true"
+            className="h-5 w-5 object-contain drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]"
+            src="/icons/paint.webp"
+            style={{
+              filter: state === 'ready' ? undefined : 'grayscale(1)',
+              opacity: iconOpacity,
+            }}
+          />
+        )}
+        {state === 'ready' || state === 'aim' ? (
+          isEraser ? null : (
             <span
               className="-right-1 -bottom-1 absolute h-3.5 w-3.5 rounded-full border border-white/70 bg-cover bg-center shadow-[0_2px_6px_rgba(0,0,0,0.45)]"
               style={{
@@ -737,6 +821,7 @@ function PaintCursorBadge({
                 backgroundImage: swatchImageUrl
                   ? `url(${JSON.stringify(swatchImageUrl)})`
                   : undefined,
+                opacity: state === 'aim' ? 0.55 : 1,
               }}
             />
           )
@@ -774,16 +859,20 @@ const ViewerSceneContent = memo(function ViewerSceneContent({
   isVersionPreviewMode,
   isLoading,
   isFirstPersonMode,
+  isXRMode,
   isStudioMode,
   onThumbnailCapture,
   viewerSceneSlot,
+  presentationsReady,
 }: {
   isVersionPreviewMode: boolean
   isLoading: boolean
   isFirstPersonMode: boolean
+  isXRMode: boolean
   isStudioMode: boolean
   onThumbnailCapture?: (blob: Blob, cameraData: SnapshotCameraData) => void
   viewerSceneSlot?: ReactNode
+  presentationsReady: boolean
 }) {
   // Studio mode is a clean render/snapshot surface — no selection or editing
   // affordances. It mirrors version-preview's chrome gating on the canvas.
@@ -796,18 +885,22 @@ const ViewerSceneContent = memo(function ViewerSceneContent({
     <>
       <SceneEnvironment />
       {!(isFirstPersonMode || isStudioMode || isCaptureMode) && <SelectionManager />}
-      {!noEditing && <BoxSelectTool />}
+      {!(noEditing || isXRMode) && <BoxSelectTool />}
+      {!noEditing && <EditorHandleHitPriority />}
       {!noEditing && <NodeArrowHandles />}
+      {!noEditing && <FootprintHeightHandle />}
       {!noEditing && <GroupRotateHandle />}
       {!noEditing && <GroupSelectionBox3D />}
       {!noEditing && <WallOpeningHighlights />}
       {!noEditing && <SlabHoleHighlights />}
       {!noEditing && <WallMoveSideHandles />}
+      {!noEditing && <WallRegionHandles />}
       {!noEditing && <FenceTangentLines3D />}
-      {!noEditing && <FloatingActionMenu />}
-      {!noEditing && <GroupFloatingActionMenu />}
-      {!noEditing && <FloatingBuildingActionMenu />}
-      {!isFirstPersonMode && <WallMeasurementLabel />}
+      {!(noEditing || isXRMode) && <FloatingActionMenu />}
+      {!(noEditing || isXRMode) && <GroupFloatingActionMenu />}
+      {!(noEditing || isXRMode) && <FloatingBuildingActionMenu />}
+      {!(noEditing || isXRMode) && <RoomLabels3D />}
+      {!(isFirstPersonMode || isXRMode) && <WallMeasurementLabel />}
       <ExportManager />
       {isFirstPersonMode ? <ViewerZoneSystem /> : <ZoneSystem />}
       <CeilingSystem />
@@ -818,11 +911,13 @@ const ViewerSceneContent = memo(function ViewerSceneContent({
       {!(isLoading || isFirstPersonMode) && <SnapAwareGrid />}
       {!(isLoading || noEditing) && <ToolManager />}
       {isFirstPersonMode && <FirstPersonControls />}
-      {isCaptureMode && <CaptureCameraRig />}
-      <CustomCameraControls />
-      <ThumbnailGenerator onThumbnailCapture={onThumbnailCapture} />
-      {!isFirstPersonMode && <SiteEdgeLabels />}
-      <InteractiveSystem />
+      {isCaptureMode && !isXRMode && <CaptureCameraRig />}
+      {!isXRMode && <CustomCameraControls />}
+      {!isXRMode && <FollowPascal />}
+      {!isXRMode && <ThumbnailGenerator onThumbnailCapture={onThumbnailCapture} />}
+      {!isXRMode && <VectorEdgeExtractor />}
+      {!(isFirstPersonMode || isXRMode) && <SiteEdgeLabels />}
+      {presentationsReady ? <ViewerPresentations /> : null}
       {!noEditing && viewerSceneSlot}
     </>
   )
@@ -914,7 +1009,10 @@ function PaintCursorLayer({
 }) {
   const mode = useEditor((s) => s.mode)
   const activePaintMaterial = useEditor((s) => s.activePaintMaterial)
-  const paintEraser = useEditor((s) => s.paintEraser)
+  const paintMode = usePaintRegionMode((s) => s.mode)
+  const picked = usePaintRegionMode((s) => s.picked)
+  const paintEraser = paintMode === 'erase'
+  const picking = paintMode === 'pick'
   const paintHover = useEditor((s) => s.paintHover)
   const sceneMaterials = useScene((s) => s.materials)
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null)
@@ -966,14 +1064,26 @@ function PaintCursorLayer({
     }
   }, [active, containerRef])
 
-  const hasPaint = paintEraser || hasActivePaintMaterial(activePaintMaterial)
+  const hasPaint = paintEraser || picking || hasActivePaintMaterial(activePaintMaterial)
+  // A region sub-mode reads its own surfaces (walls, floors), not the whole-surface hover.
+  const regionMode = paintMode === 'rectangle' || paintMode === 'polygon'
+  const regionHovering = usePaintRegionHovering()
   const badgeState: PaintCursorBadgeState = !hasPaint
     ? 'empty'
-    : paintHover != null
-      ? 'ready'
-      : 'blocked'
-  const swatchColor = getActivePaintMaterialSwatchColor(activePaintMaterial, sceneMaterials)
-  const swatchImageUrl = getActivePaintMaterialSwatchImageUrl(activePaintMaterial, sceneMaterials)
+    : picking
+      ? picked
+        ? 'ready'
+        : 'aim'
+      : regionMode
+        ? regionHovering
+          ? 'ready'
+          : 'aim'
+        : paintHover != null
+          ? 'ready'
+          : 'blocked'
+  const swatchMaterial = picking ? picked : activePaintMaterial
+  const swatchColor = getActivePaintMaterialSwatchColor(swatchMaterial, sceneMaterials)
+  const swatchImageUrl = getActivePaintMaterialSwatchImageUrl(swatchMaterial, sceneMaterials)
 
   if (!active || !position) return null
 
@@ -984,6 +1094,7 @@ function PaintCursorLayer({
     >
       <PaintCursorBadge
         isEraser={paintEraser}
+        isPicker={picking}
         position={{ x: 0, y: 0 }}
         state={badgeState}
         swatchColor={swatchColor}
@@ -993,8 +1104,8 @@ function PaintCursorLayer({
   )
 }
 
-// ── Viewer canvas: memoized, subscribes to viewMode/floorplanPaneRatio internally ──
-// This prevents Editor from re-rendering when those values change.
+// ── Viewer canvas: memoized, subscribes to the view layout internally ──
+// This prevents Editor from re-rendering when the layout changes.
 
 const ViewerCanvas = memo(function ViewerCanvas({
   isVersionPreviewMode,
@@ -1006,9 +1117,12 @@ const ViewerCanvas = memo(function ViewerCanvas({
   sceneReadyKey,
   onSceneReadyChange,
   onThumbnailCapture,
+  presentationsReady,
   viewerSceneSlot,
   floorplanSceneSlot,
   disablePostFx = false,
+  immersive,
+  hintBelowTopMenu = false,
 }: {
   isVersionPreviewMode: boolean
   isLoading: boolean
@@ -1019,15 +1133,30 @@ const ViewerCanvas = memo(function ViewerCanvas({
   sceneReadyKey: number
   onSceneReadyChange: (ready: boolean) => void
   onThumbnailCapture?: (blob: Blob, cameraData: SnapshotCameraData) => void
+  presentationsReady: boolean
   viewerSceneSlot?: ReactNode
   floorplanSceneSlot?: ReactNode
   disablePostFx?: boolean
+  immersive?: ViewerImmersiveSession
+  hintBelowTopMenu?: boolean
 }) {
-  const viewMode = useEditor((s) => s.viewMode)
-  const floorplanPaneRatio = useEditor((s) => s.floorplanPaneRatio)
-  const setFloorplanPaneRatio = useEditor((s) => s.setFloorplanPaneRatio)
+  const layout = useActiveViewLayout()
+  const views = useEditorViews()
   const isPreviewMode = useEditor((s) => s.isPreviewMode)
   const isCaptureMode = useEditor((s) => s.isCaptureMode)
+  useUnitFocusRules()
+  const wholeBuilding = useEditor((s) =>
+    showsWholeBuilding({
+      isPreviewMode: s.isPreviewMode,
+      isFirstPersonMode,
+      captureMode: s.captureMode,
+      captureLevelId: s.captureLevelId,
+    }),
+  )
+  useEditorLevelDisplay(wholeBuilding)
+  const presetIsolation = useEditor((s) =>
+    s.captureMode.mode === 'preset' ? s.captureMode.isolated : null,
+  )
 
   const [isCameraControlsHintVisible, setIsCameraControlsHintVisible] = useState<boolean | null>(
     null,
@@ -1042,25 +1171,24 @@ const ViewerCanvas = memo(function ViewerCanvas({
     setViewerAreaEl(el)
   }, [])
   const viewer3dRef = useRef<HTMLDivElement>(null)
-  const isResizingFloorplan = useRef(false)
+  const isResizingPanes = useRef(false)
 
-  const handleFloorplanDividerDown = useCallback((e: React.PointerEvent) => {
+  const handlePaneDividerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
-    isResizingFloorplan.current = true
+    isResizingPanes.current = true
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
   }, [])
 
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
-      if (!isResizingFloorplan.current) return
+      if (!isResizingPanes.current) return
       if (!viewerAreaRef.current) return
       const rect = viewerAreaRef.current.getBoundingClientRect()
-      const newRatio = (e.clientX - rect.left) / rect.width
-      setFloorplanPaneRatio(Math.max(0.15, Math.min(0.85, newRatio)))
+      useEditor.getState().setViewPaneRatio((e.clientX - rect.left) / rect.width)
     }
     const handlePointerUp = () => {
-      isResizingFloorplan.current = false
+      isResizingPanes.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
@@ -1070,7 +1198,7 @@ const ViewerCanvas = memo(function ViewerCanvas({
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', handlePointerUp)
     }
-  }, [setFloorplanPaneRatio])
+  }, [])
 
   useEffect(() => {
     setIsCameraControlsHintVisible(!readCameraControlsHintDismissed())
@@ -1081,84 +1209,132 @@ const ViewerCanvas = memo(function ViewerCanvas({
     writeCameraControlsHintDismissed(true)
   }, [])
 
-  const show2d = viewMode === '2d' || viewMode === 'split'
-  const show3d = viewMode === '3d' || viewMode === 'split'
+  const pane2d = paneOfView(layout, VIEW_2D)
+  const pane3d = paneOfView(layout, VIEW_3D)
+  const show3d = pane3d !== null
+  // Panes are grid cells placed by `gridColumn`, in a fixed DOM order: moving a
+  // view to the other pane restyles it rather than reparenting it, so the 3D
+  // canvas keeps its WebGL context and the plan its session through a swap.
+  const paneStyle = (pane: ViewPaneIndex | null): CSSProperties =>
+    pane === null ? { display: 'none' } : { gridColumn: pane + 1, gridRow: 1 }
+  const hostPanes = ([0, 1] as const).filter(
+    (pane) => (pane === 0 || layout.split) && !isSceneView(layout.panes[pane]),
+  )
+  const focusPane = (pane: ViewPaneIndex) => () => {
+    if (layout.split) useEditor.getState().focusViewPane(pane)
+  }
 
   return (
     <ErrorBoundary fallback={<EditorSceneCrashFallback />}>
       {/* `relative` so the floorplan compass (portaled here to stay visible in
-          2d / 3d / split alike) can anchor to this container's bottom-left. */}
-      <div className="relative flex h-full" ref={setViewerAreaNode}>
+          every layout) can anchor to this container's bottom-left. */}
+      <div className="relative h-full" ref={setViewerAreaNode}>
         <QuickMeasurementHud />
         <DeleteConfirmationDialog />
-        {/* 2D floorplan — always mounted once shown, hidden via CSS to preserve state */}
         <div
-          className="relative h-full flex-shrink-0"
+          className="absolute inset-0 grid"
+          data-view-split={layout.split || undefined}
           style={{
-            width: viewMode === '2d' ? '100%' : `${floorplanPaneRatio * 100}%`,
-            display: show2d ? undefined : 'none',
+            gridTemplateColumns: layout.split
+              ? `minmax(0, ${layout.ratio}fr) minmax(0, ${1 - layout.ratio}fr)`
+              : 'minmax(0, 1fr)',
+            gridTemplateRows: 'minmax(0, 1fr)',
           }}
         >
-          <div className="h-full w-full overflow-hidden">
-            <FloorplanPanel compassHost={viewerAreaEl} floorplanSceneSlot={floorplanSceneSlot} />
-          </div>
-          {viewMode === 'split' && (
-            <div
-              className="absolute inset-y-0 -right-3 z-10 flex w-6 cursor-col-resize items-center justify-center"
-              onPointerDown={handleFloorplanDividerDown}
-            >
-              <div className="h-8 w-1 rounded-full bg-neutral-400" />
+          {/* 2D floorplan — always mounted once shown, hidden via CSS to preserve state */}
+          <div
+            className="relative min-w-0 overflow-hidden"
+            data-view-pane={pane2d ?? undefined}
+            onPointerDownCapture={pane2d === null ? undefined : focusPane(pane2d)}
+            style={paneStyle(pane2d)}
+          >
+            <div className="h-full w-full overflow-hidden">
+              <FloorplanPanel compassHost={viewerAreaEl} floorplanSceneSlot={floorplanSceneSlot} />
             </div>
-          )}
+          </div>
+
+          {/* 3D viewer — always mounted, hidden via CSS to avoid destroying the WebGL context */}
+          <div
+            className="relative min-w-0 overflow-hidden"
+            data-pascal-viewer-3d
+            data-view-pane={pane3d ?? undefined}
+            onPointerDownCapture={pane3d === null ? undefined : focusPane(pane3d)}
+            ref={viewer3dRef}
+            style={paneStyle(pane3d)}
+          >
+            <DeleteCursorLayer
+              containerRef={viewer3dRef}
+              isVersionPreviewMode={isVersionPreviewMode}
+            />
+            <PaintCursorLayer
+              containerRef={viewer3dRef}
+              isVersionPreviewMode={isVersionPreviewMode}
+            />
+            {!isVersionPreviewMode && <PointAskLayer />}
+            {!showLoader && isCameraControlsHintVisible && !isFirstPersonMode ? (
+              <ViewerCanvasControlsHint
+                belowTopMenu={hintBelowTopMenu}
+                onDismiss={dismissCameraControlsHint}
+              />
+            ) : null}
+            <SelectionPersistenceManager enabled={hasLoadedInitialScene && !showLoader} />
+            <Viewer
+              defaultRender={EDITOR_DEFAULT_RENDER}
+              disablePostFx={disablePostFx}
+              hoverStyles={EDITOR_HOVER_STYLES}
+              isolate={presetIsolation}
+              // Preset captures isolate one subtree and keep the exterior transparent.
+              // Other modes retain the viewer's configured background policy.
+              transparent={presetIsolation === null ? undefined : true}
+              onSceneReadyChange={onSceneReadyChange}
+              renderContext="editor"
+              renderPaused={!show3d && !showLoader}
+              sceneReadyKey={sceneReadyKey}
+              immersive={immersive}
+              // Walk/drone framing during snapshot capture is camera-only: the
+              // viewer's default selection manager would hover-highlight whatever
+              // the cursor crosses, which orbit capture never does.
+              selectionManager={isFirstPersonMode && !isCaptureMode ? 'default' : 'custom'}
+            >
+              <ViewerSceneContent
+                isFirstPersonMode={isFirstPersonMode}
+                isLoading={showLoader}
+                isXRMode={immersive != null}
+                isStudioMode={isStudioMode}
+                isVersionPreviewMode={isVersionPreviewMode}
+                onThumbnailCapture={onThumbnailCapture}
+                presentationsReady={presentationsReady}
+                viewerSceneSlot={viewerSceneSlot}
+              />
+            </Viewer>
+          </div>
+
+          {hostPanes.map((pane) => {
+            const viewId = layout.panes[pane]
+            return (
+              <div
+                className="relative min-w-0 overflow-hidden"
+                data-view-pane={pane}
+                key={viewId}
+                onPointerDownCapture={focusPane(pane)}
+                style={paneStyle(pane)}
+              >
+                <HostView key={viewId} view={views.find((view) => view.id === viewId)} />
+              </div>
+            )
+          })}
         </div>
 
-        {/* 3D viewer — always mounted, hidden via CSS to avoid destroying the WebGL context */}
-        <div
-          className="relative min-w-0 flex-1 overflow-hidden"
-          data-pascal-viewer-3d
-          ref={viewer3dRef}
-          style={{ display: show3d ? undefined : 'none' }}
-        >
-          <DeleteCursorLayer
-            containerRef={viewer3dRef}
-            isVersionPreviewMode={isVersionPreviewMode}
-          />
-          <PaintCursorLayer
-            containerRef={viewer3dRef}
-            isVersionPreviewMode={isVersionPreviewMode}
-          />
-          {!showLoader && isCameraControlsHintVisible && !isFirstPersonMode ? (
-            <ViewerCanvasControlsHint
-              isPreviewMode={isPreviewMode}
-              onDismiss={dismissCameraControlsHint}
-            />
-          ) : null}
-          <SelectionPersistenceManager enabled={hasLoadedInitialScene && !showLoader} />
-          <Viewer
-            defaultRender={EDITOR_DEFAULT_RENDER}
-            disablePostFx={disablePostFx}
-            hoverStyles={EDITOR_HOVER_STYLES}
-            onSceneReadyChange={onSceneReadyChange}
-            renderContext="editor"
-            renderPaused={!show3d && !showLoader}
-            sceneReadyKey={sceneReadyKey}
-            // Walk/drone framing during snapshot capture is camera-only: the
-            // viewer's default selection manager would hover-highlight whatever
-            // the cursor crosses, which orbit capture never does.
-            selectionManager={isFirstPersonMode && !isCaptureMode ? 'default' : 'custom'}
+        {layout.split && (
+          <div
+            className="absolute inset-y-0 z-10 flex w-6 -translate-x-1/2 cursor-col-resize items-center justify-center"
+            onPointerDown={handlePaneDividerDown}
+            style={{ left: `${layout.ratio * 100}%` }}
           >
-            <ViewerSceneContent
-              isFirstPersonMode={isFirstPersonMode}
-              isLoading={showLoader}
-              isStudioMode={isStudioMode}
-              isVersionPreviewMode={isVersionPreviewMode}
-              onThumbnailCapture={onThumbnailCapture}
-              viewerSceneSlot={viewerSceneSlot}
-            />
-          </Viewer>
-        </div>
+            <div className="h-8 w-1 rounded-full bg-neutral-400" />
+          </div>
+        )}
       </div>
-      {!(showLoader || isVersionPreviewMode) && <ZoneLabelEditorSystem />}
     </ErrorBoundary>
   )
 })
@@ -1167,12 +1343,14 @@ function PreviewStage({
   isFirstPersonMode,
   mode,
   onModeChange,
+  projectName,
   showLoader,
   viewerContent,
 }: {
   isFirstPersonMode: boolean
   mode: ViewerStageMode
   onModeChange: (mode: ViewerStageMode) => void
+  projectName?: string | null
   showLoader: boolean
   viewerContent: ReactNode
 }) {
@@ -1188,6 +1366,7 @@ function PreviewStage({
     [onModeChange],
   )
 
+  useViewerFloorDisplay()
   const stageMode = isFirstPersonMode || !hasFloorplan ? '3d' : mode
   const stageModes = hasFloorplan && !isFirstPersonMode ? undefined : (['3d'] as const)
 
@@ -1199,9 +1378,11 @@ function PreviewStage({
         <ViewerOverlay
           hideBottomBar={stageMode !== '3d'}
           onBack={() => useEditor.getState().setPreviewMode(false)}
+          projectName={projectName}
         />
       )}
 
+      {stageMode === '3d' && !isFirstPersonMode ? <ViewerHoverLabel /> : null}
       <ViewerStage
         className="absolute inset-0"
         mode={stageMode}
@@ -1218,7 +1399,9 @@ function PreviewStage({
 }
 
 function EditorContent({
+  guardAgainstSceneWipe,
   layoutVersion = 'v1',
+  actionMenuPlacement,
   appMenuButton,
   sidebarTop,
   navbarSlot,
@@ -1226,6 +1409,8 @@ function EditorContent({
   viewerToolbarLeft,
   viewerToolbarRight,
   stageOverlay,
+  sceneOverlay,
+  viewBar = true,
   inspectorFooter,
   multiSelectionFooter,
   hostNodeActions,
@@ -1234,37 +1419,74 @@ function EditorContent({
   projectId,
   onLoad,
   onSave,
+  onSaveShortcut,
   onDirty,
   onSaveStatusChange,
   previewScene,
   isVersionPreviewMode = false,
   isLoading = false,
+  loadingSlot,
   onLoaderChange,
   onThumbnailCapture,
   disablePostFx = false,
+  immersive,
   sidebarOverlay,
   viewerBanner,
+  projectName,
   settingsPanelProps,
   sitePanelProps,
   extraSidebarPanels,
   commandPaletteEmptyAction,
 }: EditorProps) {
+  const isMobile = useIsMobile()
+  // A top-docked menu sits at the top of the scene panes on desktop (layout v2).
+  const dockMenuOnTop = actionMenuPlacement === 'top' && !isMobile
   const isFirstPersonMode = useEditor((s) => s.isFirstPersonMode)
   const isStudioMode = useEditor((s) => s.workspaceMode === 'studio')
+  const presentationProjectId = projectId ?? null
+  const presentationPersistenceRef = useRef<LocalProjectPresentationPersistence | null>(null)
+  const [restoredPresentationProjectId, setRestoredPresentationProjectId] = useState<
+    string | null | typeof PRESENTATION_PROJECT_NOT_RESTORED
+  >(PRESENTATION_PROJECT_NOT_RESTORED)
+  const presentationsReady = restoredPresentationProjectId === presentationProjectId
+
+  useClientLayoutEffect(() => {
+    const persistence = createLocalProjectPresentationPersistence()
+    presentationPersistenceRef.current = persistence
+    return () => {
+      presentationPersistenceRef.current = null
+      persistence.dispose()
+    }
+  }, [])
+
+  useClientLayoutEffect(() => {
+    const persistence = presentationPersistenceRef.current
+    if (!persistence) return
+    persistence.switchProject(presentationProjectId)
+    setRestoredPresentationProjectId(presentationProjectId)
+  }, [presentationProjectId])
 
   useKeyboard({ isVersionPreviewMode, disabled: isFirstPersonMode || isStudioMode })
+  useGestureLifecycleOwner()
 
   useEffect(() => {
     setHostNodeActions(hostNodeActions ?? null)
     return () => setHostNodeActions(null)
   }, [hostNodeActions])
 
-  const { isLoadingSceneRef } = useAutoSave({
+  const { beginSceneLoad, completeSceneLoad, saveNow } = useAutoSave({
+    guardAgainstSceneWipe,
     onSave,
     onDirty,
     onSaveStatusChange,
     isVersionPreviewMode,
   })
+
+  const handleSaveShortcut = useCallback(() => {
+    if (onSaveShortcut?.() === true) return
+    saveNow()
+  }, [onSaveShortcut, saveNow])
+  useSaveShortcut(handleSaveShortcut)
 
   const [isSceneLoading, setIsSceneLoading] = useState(false)
   const [hasLoadedInitialScene, setHasLoadedInitialScene] = useState(false)
@@ -1278,6 +1500,12 @@ function EditorContent({
   const [previewStageMode, setPreviewStageMode] = useState<ViewerStageMode>('3d')
   const isPreviewMode = useEditor((s) => s.isPreviewMode)
   const isCaptureMode = useEditor((s) => s.isCaptureMode)
+  const readOnly = useScene((s) => s.readOnly)
+  // Chrome only steps down for the top menu while the menu is actually there.
+  const topMenuShown =
+    dockMenuOnTop &&
+    !(isVersionPreviewMode || isCaptureMode || isStudioMode) &&
+    shouldShowEditingControls(readOnly)
 
   const sidebarWidth = useSidebarStore((s) => s.width)
   const isSidebarCollapsed = useSidebarStore((s) => s.isCollapsed)
@@ -1292,6 +1520,7 @@ function EditorContent({
     const teardown = initializeEditorRuntime()
     return teardown
   }, [])
+  useCeilingEditSessionOwner()
 
   useEffect(() => {
     void useEditor.persist.rehydrate()
@@ -1301,6 +1530,7 @@ function EditorContent({
   useEffect(() => {
     useViewer.getState().setProjectId(projectId ?? null)
     useFloorplanMode.getState().setProjectId(projectId ?? null)
+    resetPaintMode()
 
     return () => {
       useViewer.getState().setProjectId(null)
@@ -1308,12 +1538,12 @@ function EditorContent({
     }
   }, [projectId])
 
-  // Load scene on mount (or when onLoad identity changes, e.g. project switch)
+  // Load on mount, project switches, and explicit retry attempts.
   useEffect(() => {
     let cancelled = false
 
-    async function load() {
-      isLoadingSceneRef.current = true
+    async function load(attempt: number) {
+      beginSceneLoad()
       setSceneLoadError(null)
       setHasLoadedInitialScene(false)
       setIsViewerSceneReady(false)
@@ -1326,8 +1556,11 @@ function EditorContent({
       let failed = false
       try {
         const sceneGraph = onLoad ? await onLoad() : loadSceneFromLocalStorage()
-        if (!cancelled) {
+        if (!cancelled && attempt === sceneLoadAttempt) {
           applySceneGraphToEditor(sceneGraph)
+          // The store holds the loaded graph: autosave resumes now, not on a
+          // frame — a tab loaded while hidden never gets one.
+          completeSceneLoad()
           setIsViewerSceneReady(false)
           setSceneReadyKey((key) => key + 1)
         }
@@ -1344,20 +1577,22 @@ function EditorContent({
           setIsSceneLoading(false)
           if (!failed) {
             setHasLoadedInitialScene(true)
-            requestAnimationFrame(() => {
-              isLoadingSceneRef.current = false
-            })
+            // A project opens in select mode. Rehydrate already drops the
+            // persisted tool, but a host's rail panel may arm a mode of its
+            // own when it mounts, and with a restored rail tab that mount can
+            // land after rehydrate.
+            useEditor.getState().armToolMode({ mode: 'select' })
           }
         }
       }
     }
 
-    load()
+    load(sceneLoadAttempt)
 
     return () => {
       cancelled = true
     }
-  }, [onLoad, isLoadingSceneRef, sceneLoadAttempt])
+  }, [onLoad, beginSceneLoad, completeSceneLoad, sceneLoadAttempt])
 
   const retrySceneLoad = useCallback(() => {
     setSceneLoadAttempt((attempt) => attempt + 1)
@@ -1384,13 +1619,6 @@ function EditorContent({
   useEffect(() => {
     if (!isPreviewMode) setPreviewStageMode('3d')
   }, [isPreviewMode])
-
-  useEffect(() => {
-    document.body.classList.add('dark')
-    return () => {
-      document.body.classList.remove('dark')
-    }
-  }, [])
 
   const handleSceneReadyChange = useCallback((ready: boolean) => {
     setIsViewerSceneReady(ready)
@@ -1426,10 +1654,13 @@ function EditorContent({
 
   const firstPersonPreviousLevelRef = useRef(useViewer.getState().selection.levelId)
   const wasFirstPersonModeRef = useRef(isFirstPersonMode)
+  const firstPersonWasPreviewRef = useRef(isPreviewMode)
 
   useEffect(() => {
     const wasFirstPersonMode = wasFirstPersonModeRef.current
+    const wasPreviewMode = firstPersonWasPreviewRef.current
     wasFirstPersonModeRef.current = isFirstPersonMode
+    firstPersonWasPreviewRef.current = isPreviewMode
 
     if (isFirstPersonMode && !wasFirstPersonMode) {
       const viewer = useViewer.getState()
@@ -1448,7 +1679,8 @@ function EditorContent({
     firstPersonPreviousLevelRef.current = null
     viewer.setWalkthroughMode(false)
 
-    if (!previousLevelId) return
+    // Leaving Preview has already restored the editor's complete selection.
+    if ((wasPreviewMode && !isPreviewMode) || !previousLevelId) return
 
     const previousLevelNode = useScene.getState().nodes[previousLevelId]
     if (previousLevelNode?.type === 'level') {
@@ -1458,7 +1690,7 @@ function EditorContent({
         selectedIds: [],
       })
     }
-  }, [isFirstPersonMode])
+  }, [isFirstPersonMode, isPreviewMode])
 
   const previewViewerContent = (
     <Viewer
@@ -1466,23 +1698,27 @@ function EditorContent({
       disablePostFx={disablePostFx}
       hoverStyles={EDITOR_HOVER_STYLES}
       renderContext="editor"
-      selectionManager="default"
+      selectionManager="custom"
     >
       <ExportManager />
-      <ViewerZoneSystem />
+      <ViewerSelectionManager />
+      <ParametricViewerRooms />
       <CeilingSystem />
       <RoofEditSystem />
       <StairEditSystem />
       {isFirstPersonMode && <FirstPersonControls />}
       <CustomCameraControls />
       <ThumbnailGenerator onThumbnailCapture={onThumbnailCapture} />
+      <VectorEdgeExtractor />
       <InteractiveSystem />
+      {presentationsReady ? <ViewerPresentations /> : null}
     </Viewer>
   )
 
   const viewerCanvas = (
     <ViewerCanvas
       disablePostFx={disablePostFx}
+      hintBelowTopMenu={topMenuShown}
       hasLoadedInitialScene={hasLoadedInitialScene}
       isFirstPersonMode={isFirstPersonMode}
       isLoading={isLoading}
@@ -1490,10 +1726,12 @@ function EditorContent({
       isVersionPreviewMode={isVersionPreviewMode}
       onSceneReadyChange={handleSceneReadyChange}
       onThumbnailCapture={onThumbnailCapture}
+      presentationsReady={presentationsReady}
       sceneReadyKey={sceneReadyKey}
       showLoader={showLoader}
       viewerSceneSlot={viewerSceneSlot}
       floorplanSceneSlot={floorplanSceneSlot}
+      immersive={immersive}
     />
   )
 
@@ -1545,6 +1783,10 @@ function EditorContent({
         mobileDefaultSnap: 0.5,
         mobileIcon: p.icon,
         icon: p.icon,
+        noPanel: p.noPanel,
+        onSelect: p.onSelect,
+        stageActive: p.stageActive,
+        onDeselect: p.onDeselect,
       })),
     ]
 
@@ -1556,7 +1798,7 @@ function EditorContent({
             {sceneLoadError ? (
               <SceneLoadFailed className="bg-background" onRetry={retrySceneLoad} />
             ) : (
-              <SceneLoader className="bg-background" />
+              (loadingSlot ?? <SceneLoader className="bg-background" />)
             )}
           </div>
         )}
@@ -1566,6 +1808,7 @@ function EditorContent({
             isFirstPersonMode={isFirstPersonMode}
             mode={previewStageMode}
             onModeChange={setPreviewStageMode}
+            projectName={projectName}
             showLoader={visibleLoader}
             viewerContent={previewViewerContent}
           />
@@ -1575,25 +1818,38 @@ function EditorContent({
               navbarSlot={navbarSlot}
               overlays={
                 <>
-                  {!(isCaptureMode || stageOverlay) && <FloatingLevelSelector />}
-                  {!(isVersionPreviewMode || isCaptureMode || isStudioMode) && (
-                    <div className="pointer-events-auto">
-                      <ActionMenu />
-                    </div>
-                  )}
-                  {!(isVersionPreviewMode || isCaptureMode || isStudioMode) && (
-                    <div className="pointer-events-auto">
-                      <PanelManager
-                        inspectorFooter={inspectorFooter}
-                        multiSelectionFooter={multiSelectionFooter}
-                      />
-                    </div>
-                  )}
-                  {!isCaptureMode && (
-                    <div className="pointer-events-auto">
-                      <HelperManager />
-                    </div>
-                  )}
+                  <SceneRegion>
+                    {!(isCaptureMode || stageOverlay) && <FloatingLevelSelector />}
+                    {!(isVersionPreviewMode || isCaptureMode || isStudioMode) &&
+                      (dockMenuOnTop ? (
+                        // Own row under the toolbar, below the level selector's opening list (z-20).
+                        // No transform: the menu's fixed pill must anchor to the scene region.
+                        <div className="pointer-events-none absolute inset-x-0 top-14 z-10 flex justify-center">
+                          <div className="pointer-events-auto">
+                            <ActionMenu inline placement="top" />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="pointer-events-auto">
+                          <ActionMenu placement={actionMenuPlacement} />
+                        </div>
+                      ))}
+                    {sceneOverlay}
+                  </SceneRegion>
+                  {/* The inspector and the shortcuts card share one right column. */}
+                  <RightStack
+                    belowTopMenu={topMenuShown}
+                    reserveBottomMenu={!dockMenuOnTop}
+                    helper={isCaptureMode ? null : <HelperManager />}
+                    inspector={
+                      isVersionPreviewMode || isCaptureMode || isStudioMode ? null : (
+                        <PanelManager
+                          inspectorFooter={inspectorFooter}
+                          multiSelectionFooter={multiSelectionFooter}
+                        />
+                      )
+                    }
+                  />
                   {/* Capture mode drives walk / drone from its own overlay, which
                       owns the framing chrome — the walkthrough HUD would both
                       clutter the frame and offer a second, conflicting exit. */}
@@ -1610,6 +1866,7 @@ function EditorContent({
               sidebarOverlay={sidebarOverlay}
               sidebarTabs={tabBarTabs}
               stageOverlay={stageOverlay}
+              viewBar={viewBar}
               viewerContent={viewerCanvas}
               viewerToolbarLeft={viewerToolbarLeft}
               viewerToolbarRight={viewerToolbarRight}
@@ -1629,14 +1886,14 @@ function EditorContent({
   const overlayLeft = LAYOUT_PADDING + (isSidebarCollapsed ? 8 : sidebarWidth) + LAYOUT_GAP
 
   return (
-    <div className="dark flex h-full w-full gap-3 bg-neutral-100 p-3 text-foreground">
+    <div className="flex h-full w-full gap-3 bg-neutral-100 p-3 text-foreground">
       <FloorplanModeCoordinator />
       {visibleLoader && (
         <div className="fixed inset-0 z-60">
           {sceneLoadError ? (
             <SceneLoadFailed className="bg-background" onRetry={retrySceneLoad} />
           ) : (
-            <SceneLoader className="bg-background" />
+            (loadingSlot ?? <SceneLoader className="bg-background" />)
           )}
         </div>
       )}
@@ -1646,6 +1903,7 @@ function EditorContent({
           isFirstPersonMode={isFirstPersonMode}
           mode={previewStageMode}
           onModeChange={setPreviewStageMode}
+          projectName={projectName}
           showLoader={visibleLoader}
           viewerContent={previewViewerContent}
         />
@@ -1669,14 +1927,13 @@ function EditorContent({
           {/* Fixed UI overlays scoped to the viewer area */}
           <ViewerOverlays left={overlayLeft}>
             <div className="pointer-events-auto">
-              <ActionMenu />
+              <ActionMenu placement={actionMenuPlacement} />
             </div>
-            <div className="pointer-events-auto">
-              <PanelManager />
-            </div>
-            <div className="pointer-events-auto">
-              <HelperManager />
-            </div>
+            <RightStack
+              helper={<HelperManager />}
+              inspector={<PanelManager />}
+              reserveBottomMenu={actionMenuPlacement !== 'top' || isMobile}
+            />
             <RiserDiagramPanel />
             {isFirstPersonMode && (
               <FirstPersonOverlay onExit={() => useEditor.getState().setFirstPersonMode(false)} />

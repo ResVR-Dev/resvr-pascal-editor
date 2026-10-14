@@ -1,17 +1,12 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { newZone } from '@pascal-app/core'
 import type { SceneGraph } from '@pascal-app/core/clone-scene-graph'
 import type { AnyNodeId, AnyNode as AnyNodeT } from '@pascal-app/core/schema'
-import {
-  AnyNode,
-  BuildingNode,
-  LevelNode,
-  SiteNode,
-  WallNode,
-  ZoneNode,
-} from '@pascal-app/core/schema'
+import { AnyNode, BuildingNode, LevelNode, SiteNode, WallNode } from '@pascal-app/core/schema'
 import { z } from 'zod'
 import type { SceneOperations } from '../../operations'
+import { DESTRUCTIVE_OPEN_WORLD_TOOL_ANNOTATIONS } from '../annotations'
 import { appendLiveSceneEvent } from '../live-sync'
 import { measurement } from '../measurement'
 
@@ -310,7 +305,7 @@ function buildSceneGraphFromVision(
   for (let i = 0; i < vision.rooms.length; i++) {
     const r = vision.rooms[i]!
     try {
-      const zone = ZoneNode.parse({
+      const zone = newZone({
         name: r.name,
         polygon: r.polygon,
       })
@@ -358,6 +353,7 @@ export function registerPhotoToScene(server: McpServer, bridge: SceneOperations)
         'Orchestrator: analyse a floor-plan photo via MCP sampling, translate the structured vision result into a Pascal SceneGraph (site → building → level with walls and zones), optionally save it, and swap the bridge to the new scene. Requires host support for sampling.',
       inputSchema: photoToSceneInput,
       outputSchema: photoToSceneOutput,
+      annotations: DESTRUCTIVE_OPEN_WORLD_TOOL_ANNOTATIONS,
     },
     async ({ image, scaleHint, name, save, defaultWallThickness, defaultWallHeight }) => {
       // 1. Vision.

@@ -3,7 +3,12 @@
 import {
   type AnyNodeId,
   type SiteNode,
+  sightTriangle,
+  siteFrontEdge,
+  siteSetbackEnvelope,
+  streetCorners,
   type TerrainField,
+  terrainContours,
   terrainFieldOf,
   unionPolygons,
   useLiveNodeOverrides,
@@ -17,13 +22,38 @@ import {
   getSceneTheme,
   horizonHazeColor,
   NodeRenderer,
+  useImmersiveXRPresentation,
   useNodeEvents,
+  useSceneAtmosphere,
+  useSceneGroundReplacement,
   useViewer,
 } from '@pascal-app/viewer'
 import { useEffect, useMemo, useRef } from 'react'
-import { BufferAttribute, BufferGeometry, type Group, Path, Shape, ShapeGeometry } from 'three'
-import { cameraPosition, color, float, mix, positionWorld, smoothstep, vec2 } from 'three/tsl'
+import {
+  BufferAttribute,
+  BufferGeometry,
+  DoubleSide,
+  type Group,
+  Path,
+  Shape,
+  ShapeGeometry,
+} from 'three'
+import {
+  cameraPosition,
+  color,
+  mix,
+  positionWorld,
+  smoothstep,
+  float as tslFloat,
+  vec2,
+} from 'three/tsl'
 import { MeshLambertNodeMaterial } from 'three/webgpu'
+import {
+  buildPatternedRibbon,
+  PROPERTY_LINE_PATTERN,
+  SETBACK_LINE_PATTERN,
+  updateRibbonHeights,
+} from './line-ribbon'
 import { getRecessedSlabGroundHoles } from './recessed-slab-ground-holes'
 import {
   buildDrapedPolyline,
@@ -31,7 +61,7 @@ import {
   terrainGridKey,
   updateDrapedHeights,
 } from './terrain-drape'
-import { HORIZON_PLANE_Y, terrainFootprint } from './terrain-geometry'
+import { HORIZON_PLANE_Y, terrainBlockBase } from './terrain-geometry'
 import { TerrainRenderer } from './terrain-renderer'
 
 const Y_OFFSET = 0.01
@@ -78,6 +108,19 @@ const createBoundaryLineGeometry = (
  * is a disc, the ring is a loop, and the two intersect in up to four arcs), so a
  * range would either be the whole buffer or a list. The whole buffer is a few KB.
  */
+type Ribbons = {
+  property: BufferGeometry
+  envelope: BufferGeometry | null
+  triangles: BufferGeometry[]
+}
+
+function redrapeRibbons(r: Ribbons | null, field: TerrainField | null): void {
+  if (!r) return
+  updateRibbonHeights(r.property, field, Y_OFFSET)
+  if (r.envelope) updateRibbonHeights(r.envelope, field, Y_OFFSET + 0.01)
+  for (const g of r.triangles) updateRibbonHeights(g, field, Y_OFFSET + 0.012)
+}
+
 function markPositionsDirty(geometry: BufferGeometry): void {
   const attribute = geometry.getAttribute('position') as BufferAttribute
   attribute.needsUpdate = true
@@ -127,6 +170,9 @@ function addSlabHoles(
 
 export const SiteRenderer = ({ node }: { node: SiteNode }) => {
   const ref = useRef<Group>(null!)
+  const immersiveXR = useImmersiveXRPresentation()
+  const atmosphere = useSceneAtmosphere()
+  const groundReplaced = useSceneGroundReplacement()
 
   useRegistry(node.id, 'site', ref)
 
@@ -191,40 +237,44 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
     return material
   }, [bgColor])
 
-  // Presentation horizon: a large ground disc under the lot, in the same
-  // theme ground colour, fading radially into the theme background so the
-  // scene sits on an "infinite" plane that dissolves into the sky instead of
-  // a hard-edged plate floating on the backdrop. Never pickable.
+  // Presentation horizon: a large ground disc under the lot, fading into the
+  // active fog radiance (or the theme backdrop when there is no atmosphere) so
+  // the scene sits on an "infinite" plane instead of a hard-edged plate. Never pickable.
   const horizonMaterial = useMemo(() => {
-    if (!fadeBounds) return null
+    if (!fadeBounds || groundReplaced) return null
     const material = new MeshLambertNodeMaterial({ color: bgColor })
     const center = vec2(fadeBounds.cx, fadeBounds.cz)
     const dist = positionWorld.xz.sub(center).length()
-    const fade = smoothstep(float(fadeBounds.radius * 1.05), float(fadeBounds.radius * 5), dist)
+    const fade = smoothstep(
+      tslFloat(fadeBounds.radius * 1.05),
+      tslFloat(fadeBounds.radius * 5),
+      dist,
+    )
     // Contact vignette: a soft darkening that hugs the lot so the parcel
     // reads as sitting on the ground instead of floating on an even field.
     // The linear cut competes with the tone mapper's shoulder — bright themes
     // (studio's key light runs at intensity 4) compress a fixed 15% to almost
     // nothing — so the strength scales with the theme's strongest light.
     const vignetteStrength = Math.min(0.45, 0.13 * maxLightIntensity)
-    const halo = float(1)
-      .sub(smoothstep(float(fadeBounds.radius * 0.95), float(fadeBounds.radius * 2.6), dist))
+    const halo = tslFloat(1)
+      .sub(smoothstep(tslFloat(fadeBounds.radius * 0.95), tslFloat(fadeBounds.radius * 2.6), dist))
       .mul(vignetteStrength)
-    const haloFactor = float(1).sub(halo)
+    const haloFactor = tslFloat(1).sub(halo)
     material.colorNode = mix(color(bgColor), color('#000000'), fade).mul(haloFactor)
-    // Dissolve, not tint: the albedo (lighting response, incl. shadows) fades
-    // to black while an emissive term fades up to the backdrop gradient — the
-    // exact formula the post pipeline composites (viewer lib/backdrop.ts),
-    // evaluated with this fragment's view direction, so the far end is
-    // literally the backdrop (incl. the horizon haze) from any camera pose.
-    const viewDirY = positionWorld.sub(cameraPosition).normalize().y
-    const backdrop = backdropGradient({
-      dirY: viewDirY,
-      background: color(backgroundColor),
-      haze: color(horizonHazeColor(skyColor, appearance)),
-      sky: color(skyColor),
-      skyDeep: color(deepSkyColor(skyColor)),
-    })
+    // Dissolve, not tint: albedo fades to black while emissive fades up to the
+    // exact active horizon source, evaluated with this fragment's world-space
+    // view direction. fogRadiance excludes celestial discs and stars so they
+    // cannot leave bright spots around the ground seam.
+    const viewDir = positionWorld.sub(cameraPosition).normalize()
+    const backdrop = atmosphere
+      ? atmosphere.fogRadiance(viewDir)
+      : backdropGradient({
+          dirY: viewDir.y,
+          background: color(backgroundColor),
+          haze: color(horizonHazeColor(skyColor, appearance)),
+          sky: color(skyColor),
+          skyDeep: color(deepSkyColor(skyColor)),
+        })
     // The halo also scales the in-band emissive: the dissolve starts at 1.05R,
     // so without it the (bright) backdrop dilutes the vignette exactly where
     // it should read. halo is 0 past 2.6R while the dissolve completes at 5R,
@@ -238,7 +288,16 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
     material.polygonOffsetFactor = 2
     material.polygonOffsetUnits = 2
     return material
-  }, [bgColor, backgroundColor, skyColor, appearance, maxLightIntensity, fadeBounds])
+  }, [
+    atmosphere,
+    bgColor,
+    backgroundColor,
+    skyColor,
+    appearance,
+    maxLightIntensity,
+    fadeBounds,
+    groundReplaced,
+  ])
 
   // Cache computed polygons to keep the selector stable across unrelated store updates.
   const slabPolygonsCache = useRef<[number, number][][]>([])
@@ -266,12 +325,17 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
     return shape
   }, [polygonPoints, slabPolygons])
 
-  // The terrain footprint is punched out alongside the recessed slabs, and for the
-  // same reason: the disc must not cap ground that is modelled below it.
-  //
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `terrainKey` is the grid signature the footprint is a function of; depending on the field itself would rebuild an 800 m disc every dab.
+  // With terrain the lot is a block — its ground cut to the property line, its
+  // skirt dropping to one flat base — and the disc lies just under that base, so
+  // nothing of it caps the lot and nothing of the block stands proud of it from
+  // the far side. The recessed slabs are still punched: a basement can go deeper.
+  const horizonY = useMemo(
+    () => (terrainGrid ? terrainBlockBase(terrainGrid) - 0.02 : HORIZON_PLANE_Y),
+    [terrainGrid],
+  )
+
   const horizonGeometry = useMemo(() => {
-    if (!fadeBounds) return null
+    if (!fadeBounds || groundReplaced) return null
     const radius = Math.max(fadeBounds.radius * 8, 400)
     const shape = new Shape()
     const segments = 64
@@ -281,11 +345,11 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
       shape.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius)
     }
     shape.closePath()
-    const holes = terrainGrid ? [...slabPolygons, terrainFootprint(terrainGrid)] : slabPolygons
-    addSlabHoles(shape, holes, fadeBounds.cx, fadeBounds.cz)
+    addSlabHoles(shape, slabPolygons, fadeBounds.cx, fadeBounds.cz)
     return new ShapeGeometry(shape)
-  }, [fadeBounds, slabPolygons, terrainKey])
+  }, [fadeBounds, slabPolygons, groundReplaced])
   useEffect(() => () => horizonGeometry?.dispose(), [horizonGeometry])
+  useEffect(() => () => horizonMaterial?.dispose(), [horizonMaterial])
 
   // Boundary line geometry, subdivided against the terrain grid when there is one.
   //
@@ -306,6 +370,74 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
   useEffect(() => () => boundary?.geometry.dispose(), [boundary])
   const lineGeometry = boundary?.geometry ?? null
 
+  // A site with drafted setbacks draws the PROPERTY LINE as the standard line —
+  // dark, thick, a long dash and two dots — and the SETBACK lines in black
+  // dashes, both ribbons lying on the draped ground (line-ribbon.ts). Any other
+  // site keeps the plain amber boundary. Keyed on the same grid as the
+  // boundary; a dab mid-stroke moves the thin ring only, the ribbons follow
+  // on the commit.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the grid, not the field — see above.
+  const ribbons = useMemo(() => {
+    const setbacks = node.setbacks
+    if (!setbacks || !boundary || !polygonPoints || polygonPoints.length < 3) return null
+    const field = useLiveTerrain.getState().fieldOf(node.id) ?? persistedField
+    const property = buildPatternedRibbon(boundary.ring.positions, PROPERTY_LINE_PATTERN, 0.22)
+    let envelopeGeometry: BufferGeometry | null = null
+    const triangleGeometries: BufferGeometry[] = []
+    const points = polygonPoints.map(([x, z]) => [x ?? 0, z ?? 0] as [number, number])
+    // the live ring, measured the one way the site plan and the agents measure it
+    const lot = { ...node, polygon: { type: 'polygon' as const, points } }
+    const front = siteFrontEdge(lot)
+    const streetEdges = node.streetEdges ?? []
+    const sightTriangleM =
+      typeof node.sightTriangleFt === 'number' && node.sightTriangleFt > 0
+        ? node.sightTriangleFt * 0.3048
+        : 0
+    const envelope = siteSetbackEnvelope(lot)
+    if (envelope.length >= 3) {
+      const draped = buildDrapedPolyline({
+        points: envelope,
+        field,
+        lift: Y_OFFSET + 0.01,
+        closed: true,
+      })
+      envelopeGeometry = buildPatternedRibbon(draped.positions, SETBACK_LINE_PATTERN, 0.1)
+    }
+    // the corner sight triangles, dashed like the setbacks
+    if (sightTriangleM > 0) {
+      for (const [a, b] of streetCorners(points, [front, ...streetEdges])) {
+        const tri = sightTriangle(points, a, b, sightTriangleM)
+        if (!tri) continue
+        const draped = buildDrapedPolyline({
+          points: [tri.corner, tri.a, tri.b],
+          field,
+          lift: Y_OFFSET + 0.012,
+          closed: true,
+        })
+        triangleGeometries.push(buildPatternedRibbon(draped.positions, SETBACK_LINE_PATTERN, 0.08))
+      }
+    }
+    return { property, envelope: envelopeGeometry, triangles: triangleGeometries }
+  }, [
+    boundary,
+    polygonPoints,
+    node.setbacks,
+    node.frontEdge,
+    node.streetEdges,
+    node.sightTriangleFt,
+    node.northRotation,
+    terrainKey,
+    node.id,
+  ])
+  useEffect(
+    () => () => {
+      ribbons?.property.dispose()
+      ribbons?.envelope?.dispose()
+      for (const g of ribbons?.triangles ?? []) g.dispose()
+    },
+    [ribbons],
+  )
+
   // Per-dab height rewrite, imperative for the same reason `TerrainRenderer`'s
   // upload is: a stroke pushes dozens of patches a second, and routing each through
   // a React render would rebuild the ring's buffers at pointer rate. The XZ of every
@@ -315,6 +447,8 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
   // polygon edit without resubscribing.
   const boundaryRef = useRef<{ geometry: BufferGeometry; ring: DrapedPolyline } | null>(null)
   boundaryRef.current = boundary
+  const ribbonsRef = useRef<Ribbons | null>(null)
+  ribbonsRef.current = ribbons
   useEffect(() => {
     let lastPatch = useLiveTerrain.getState().strokeOf(node.id)?.lastPatch ?? null
     return useLiveTerrain.subscribe((state) => {
@@ -330,6 +464,7 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
           const field = terrainFieldOf({ id: node.id, terrain: node.terrain })
           updateDrapedHeights(current.ring, field, Y_OFFSET)
           markPositionsDirty(current.geometry)
+          redrapeRibbons(ribbonsRef.current, field)
         }
         return
       }
@@ -337,8 +472,63 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
       lastPatch = stroke.lastPatch
       updateDrapedHeights(current.ring, stroke.field, Y_OFFSET)
       markPositionsDirty(current.geometry)
+      // the property and setback ribbons follow the same dab
+      redrapeRibbons(ribbonsRef.current, stroke.field)
     })
   }, [node.id, node.terrain])
+
+  // The CONTOUR LINES on the ground (toggleable in 3D, drawn as faint,
+  // translucent near-black lines): the site's surveyed lines (the dossier's 3DEP set) at the
+  // site-plan interval, else the heightfield's own contours; each draped
+  // on the ground and merged into one line-segments buffer. Rebuilt on the
+  // terrain COMMIT (the persisted field), not per dab.
+  const contourGeometry = useMemo(() => {
+    if (!node.contours3d) return null
+    const intervalIn = node.contourIntervalIn ?? 12
+    if (!(intervalIn > 0)) return null
+    const field = persistedField
+    const lot = (polygonPoints ?? []) as [number, number][]
+    const stepFt = intervalIn / 12
+    const surveyed = node.terrainContours
+    const multiple = (a: number, b: number) => Math.abs(a / b - Math.round(a / b)) < 1e-9
+    let lines: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = []
+    if (surveyed && surveyed.lines.length > 0 && multiple(stepFt, surveyed.intervalFt)) {
+      lines = surveyed.lines.filter((l) => multiple(l.elevationFt, stepFt)).map((l) => l.points)
+    } else if (field) {
+      lines = terrainContours(field, intervalIn * 0.0254, lot).map((c) => c.points)
+    }
+    const chunks: Float32Array[] = []
+    let total = 0
+    for (const points of lines) {
+      if (points.length < 2) continue
+      const draped = buildDrapedPolyline({ points, field, lift: Y_OFFSET + 0.005, closed: false })
+      const n = draped.positions.length / 3
+      if (n < 2) continue
+      const seg = new Float32Array((n - 1) * 6)
+      for (let i = 0; i < n - 1; i++) {
+        seg[i * 6] = draped.positions[i * 3] ?? 0
+        seg[i * 6 + 1] = draped.positions[i * 3 + 1] ?? 0
+        seg[i * 6 + 2] = draped.positions[i * 3 + 2] ?? 0
+        seg[i * 6 + 3] = draped.positions[i * 3 + 3] ?? 0
+        seg[i * 6 + 4] = draped.positions[i * 3 + 4] ?? 0
+        seg[i * 6 + 5] = draped.positions[i * 3 + 5] ?? 0
+      }
+      chunks.push(seg)
+      total += seg.length
+    }
+    if (total === 0) return null
+    const merged = new Float32Array(total)
+    let at = 0
+    for (const c of chunks) {
+      merged.set(c, at)
+      at += c.length
+    }
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new BufferAttribute(merged, 3))
+    geometry.computeBoundingSphere()
+    return geometry
+  }, [node.contours3d, node.contourIntervalIn, node.terrainContours, persistedField, polygonPoints])
+  useEffect(() => () => contourGeometry?.dispose(), [contourGeometry])
 
   const groundGeometry = useMemo(() => {
     if (!groundShape) return null
@@ -355,6 +545,13 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
   // terrain still mounts the mesh.
   const showTerrain = terrainGrid !== null
 
+  // The Site is the one kind whose `visible` flag stops at itself: hiding it
+  // drops the parcel's own presentation — ground fill, sculpted ground, lot
+  // line — while everything standing on the site keeps its own flag (the
+  // exporter and the 2D plan draw the same line). The horizon disc is a world
+  // backdrop rather than part of the parcel, so it stays either way.
+  const showSiteSurfaces = node.visible !== false
+
   if (!(node && lineGeometry)) {
     return null
   }
@@ -367,10 +564,17 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
       ))}
 
       {/* Sculpted ground, when the site has terrain */}
-      {showTerrain && <TerrainRenderer material={groundMaterial} site={node} />}
+      {showSiteSurfaces && showTerrain && (
+        <TerrainRenderer
+          holes={slabPolygons}
+          material={groundMaterial}
+          polygon={polygonPoints}
+          site={node}
+        />
+      )}
 
       {/* Ground fill: site polygon with slab holes, occludes below-grade geometry */}
-      {groundGeometry && !showTerrain && (
+      {showSiteSurfaces && groundGeometry && !showTerrain && (
         <mesh
           geometry={groundGeometry}
           material={groundMaterial}
@@ -381,11 +585,11 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
       )}
 
       {/* Infinite-ground presentation disc fading into the sky at the horizon */}
-      {horizonGeometry && horizonMaterial && fadeBounds && (
+      {!immersiveXR && horizonGeometry && horizonMaterial && fadeBounds && (
         <mesh
           geometry={horizonGeometry}
           material={horizonMaterial}
-          position={[fadeBounds.cx, HORIZON_PLANE_Y, fadeBounds.cz]}
+          position={[fadeBounds.cx, horizonY, fadeBounds.cz]}
           raycast={noopRaycast}
           receiveShadow
           rotation={[-Math.PI / 2, 0, 0]}
@@ -393,11 +597,86 @@ export const SiteRenderer = ({ node }: { node: SiteNode }) => {
         />
       )}
 
+      {showSiteSurfaces && ribbons && (
+        <>
+          {/* The property line: dark, thick, long dash + two dots, on the ground */}
+          <mesh
+            frustumCulled={false}
+            geometry={ribbons.property}
+            raycast={noopRaycast}
+            renderOrder={9}
+          >
+            <meshBasicMaterial
+              color="#1c1917"
+              depthWrite={false}
+              side={DoubleSide}
+              toneMapped={false}
+            />
+          </mesh>
+          {/* The setback envelope: black dashes */}
+          {ribbons.envelope && (
+            <mesh
+              frustumCulled={false}
+              geometry={ribbons.envelope}
+              raycast={noopRaycast}
+              renderOrder={9}
+            >
+              <meshBasicMaterial
+                color="#000000"
+                depthWrite={false}
+                opacity={0.85}
+                side={DoubleSide}
+                toneMapped={false}
+                transparent
+              />
+            </mesh>
+          )}
+          {/* The corner sight triangles */}
+          {ribbons.triangles.map((g, i) => (
+            <mesh frustumCulled={false} geometry={g} key={i} raycast={noopRaycast} renderOrder={9}>
+              <meshBasicMaterial
+                color="#000000"
+                depthWrite={false}
+                opacity={0.85}
+                side={DoubleSide}
+                toneMapped={false}
+                transparent
+              />
+            </mesh>
+          ))}
+          {/* The thin ring the sculpt tool moves live */}
+          {/* @ts-expect-error */}
+          <line frustumCulled={false} geometry={lineGeometry} renderOrder={8}>
+            <lineBasicMaterial color="#1c1917" opacity={0.5} transparent />
+          </line>
+        </>
+      )}
+
       {/* Simple boundary line */}
-      {/* @ts-ignore */}
-      <line frustumCulled={false} geometry={lineGeometry} renderOrder={9}>
-        <lineBasicMaterial color="#f59e0b" linewidth={2} opacity={0.6} transparent />
-      </line>
+      {showSiteSurfaces && !ribbons && (
+        // @ts-expect-error
+        <line frustumCulled={false} geometry={lineGeometry} renderOrder={9}>
+          <lineBasicMaterial color="#f59e0b" linewidth={2} opacity={0.6} transparent />
+        </line>
+      )}
+
+      {/* The contour lines: thin, translucent, barely black, on the ground */}
+      {showSiteSurfaces && contourGeometry && (
+        <lineSegments
+          frustumCulled={false}
+          geometry={contourGeometry}
+          raycast={noopRaycast}
+          renderOrder={8}
+        >
+          <lineBasicMaterial
+            color="#000000"
+            depthWrite={false}
+            opacity={0.22}
+            toneMapped={false}
+            transparent
+          />
+        </lineSegments>
+      )}
     </group>
   )
 }

@@ -14,7 +14,7 @@ import {
 } from '@pascal-app/core'
 import {
   cn,
-  createFreshPlacementSubtree,
+  duplicateNodeAndPickUp,
   PanelSection,
   PanelWrapper,
   SliderControl,
@@ -129,18 +129,8 @@ export default function DormerPanel() {
   }, [node, selectedId, setMovingNode, setSelection])
 
   const handleDuplicate = useCallback(() => {
-    if (!node?.roofSegmentId) return
-    triggerSFX('sfx:item-pick')
-    useScene.temporal.getState().pause()
-    const draftId = createFreshPlacementSubtree(node.id as AnyNodeId)
-    const draft = draftId ? (useScene.getState().nodes[draftId] as DormerNode | undefined) : null
-    if (!draft) {
-      useScene.temporal.getState().resume()
-      return
-    }
-    setMovingNode(draft)
-    setSelection({ selectedIds: [] })
-  }, [node, setMovingNode, setSelection])
+    if (node) duplicateNodeAndPickUp(node)
+  }, [node])
 
   const handleDelete = useCallback(() => {
     if (!(selectedId && node)) return
@@ -276,7 +266,7 @@ export default function DormerPanel() {
                   'flex min-h-10 items-center justify-center rounded-lg border px-2 py-2 text-center text-xs transition-colors',
                   isSelected
                     ? 'border-orange-400/60 bg-orange-400/10 text-foreground'
-                    : 'border-border/50 bg-[#2C2C2E] text-muted-foreground hover:bg-[#3e3e3e] hover:text-foreground',
+                    : 'border-border/50 bg-black/4 dark:bg-[#2C2C2E] text-muted-foreground hover:bg-black/8 dark:hover:bg-[#3e3e3e] hover:text-foreground',
                 )}
                 key={option.value}
                 onClick={() => setSection(option.value)}
@@ -302,7 +292,7 @@ export default function DormerPanel() {
               restoreOnCommit={false}
               step={0.05}
               unit="m"
-              value={Math.round(node.width * 100) / 100}
+              value={node.width}
             />
             <SliderControl
               label="Depth"
@@ -314,7 +304,7 @@ export default function DormerPanel() {
               restoreOnCommit={false}
               step={0.05}
               unit="m"
-              value={Math.round(node.depth * 100) / 100}
+              value={node.depth}
             />
             <SliderControl
               label="Wall Height"
@@ -326,7 +316,7 @@ export default function DormerPanel() {
               restoreOnCommit={false}
               step={0.05}
               unit="m"
-              value={Math.round(node.height * 100) / 100}
+              value={node.height}
             />
             <SliderControl
               label={node.roofType === 'shed' ? 'Pitch Rise' : 'Roof Height'}
@@ -338,7 +328,7 @@ export default function DormerPanel() {
               restoreOnCommit={false}
               step={0.05}
               unit="m"
-              value={Math.round(node.roofHeight * 100) / 100}
+              value={node.roofHeight}
             />
           </PanelSection>
 
@@ -352,7 +342,7 @@ export default function DormerPanel() {
                       'flex min-h-10 items-center justify-center rounded-lg border px-2 py-2 text-xs transition-colors',
                       isSelected
                         ? 'border-orange-400/60 bg-orange-400/10 text-foreground'
-                        : 'border-border/50 bg-[#2C2C2E] text-muted-foreground hover:bg-[#3e3e3e] hover:text-foreground',
+                        : 'border-border/50 bg-black/4 dark:bg-[#2C2C2E] text-muted-foreground hover:bg-black/8 dark:hover:bg-[#3e3e3e] hover:text-foreground',
                     )}
                     key={option.value}
                     onClick={() => handleUpdate({ roofType: option.value })}
@@ -376,7 +366,7 @@ export default function DormerPanel() {
                         'flex min-h-10 items-center justify-center rounded-lg border px-2 py-2 text-xs transition-colors',
                         isSelected
                           ? 'border-orange-400/60 bg-orange-400/10 text-foreground'
-                          : 'border-border/50 bg-[#2C2C2E] text-muted-foreground hover:bg-[#3e3e3e] hover:text-foreground',
+                          : 'border-border/50 bg-black/4 dark:bg-[#2C2C2E] text-muted-foreground hover:bg-black/8 dark:hover:bg-[#3e3e3e] hover:text-foreground',
                       )}
                       key={option.value}
                       onClick={() => handleUpdate({ shedHighSide: option.value })}

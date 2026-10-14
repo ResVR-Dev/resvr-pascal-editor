@@ -8,6 +8,7 @@ import {
   isAngleSnapActive,
   isGridSnapActive,
   isMagneticSnapActive,
+  isTypingTarget,
   markToolCancelConsumed,
   triggerSFX,
   useEditor,
@@ -120,6 +121,7 @@ const LinesetTool = () => {
       // mitered polyline run.
       const lineset = LinesetNode.parse({
         ...linesetDefinition.defaults(),
+        ...useEditor.getState().toolDefaults.lineset,
         name: 'Lineset',
         path: [start, end],
       })
@@ -245,8 +247,7 @@ const LinesetTool = () => {
     }
 
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (isTypingTarget(e.target)) return
       if (e.key === 'Alt') {
         e.preventDefault()
         enterAltMode()

@@ -5,6 +5,7 @@ import {
   getGarageVisibleOpeningRatio,
   getLevelElevations,
   isOperationDoorType,
+  nodeMechanism,
   nodeRegistry,
   sceneRegistry,
   terrainFieldOf,
@@ -281,6 +282,10 @@ function createDoorLeafColliderGeometry(root: THREE.Object3D, node: DoorNode) {
   const hasLeafContent = node.segments.some((segment) => segment.type !== 'empty')
   if (!hasLeafContent) return null
 
+  // A door built from a script opens by its model's `open` clip, which the mechanism runs through
+  // its own control: the native `operationState` below never moves for it, so open is read there.
+  if (node.source && nodeMechanism(node)?.isOn(node, useInteractive.getState())) return null
+
   const leafW = node.width - 2 * node.frameThickness
   const leafH = node.height - node.frameThickness
   if (leafW <= 0 || leafH <= 0) return null
@@ -356,8 +361,12 @@ function collectColliderGeometriesFromNode(
     visitedMeshes.add(object)
 
     // Prune hidden subtrees — children of an invisible group never render,
-    // so they must not collide either (see isEffectivelyVisible).
-    if (!object.visible) return
+    // so they must not collide either (see isEffectivelyVisible). An idle joint
+    // tree draws a merged rest pose that includes its moving parts; its hidden
+    // split group holds the same static parts apart from them.
+    if (object.userData.pascalProceduralRest) return
+    if (!object.visible && !object.userData.pascalProceduralSplit) return
+    if (object.userData.proceduralMotion) return
 
     if (
       isMesh(object) &&

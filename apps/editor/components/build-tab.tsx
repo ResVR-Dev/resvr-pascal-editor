@@ -1,286 +1,88 @@
 'use client'
 
 import {
-  nodeRegistry,
-  type RoofType,
+  type AnyNodeId,
+  isFenceFeatureNode,
   RoofType as RoofTypeSchema,
   useRegistryVersion,
+  useScene,
 } from '@pascal-app/core'
 import {
-  CATALOG_ITEMS,
-  type FloorplanMode,
-  getFloorplanNodeExtension,
-  isFloorplanToolAvailableInMode,
-  MaterialPaintPanel,
+  BuildPanelAdvancedSection,
+  BuildPanelRoomsSection,
+  BuildPanelSection,
+  BuildToolGrid,
+  BuildToolTile,
+  selectWallDrawVariant,
+  startTerraceDraft,
   TerrainSculptPanel,
   ToolOptionsPanel,
   triggerSFX,
   useEditor,
   useFloorplanMode,
+  useTerraceDraft,
+  useWallDrawVariant,
 } from '@pascal-app/editor'
 import { useLiquidLineToolOptions } from '@pascal-app/nodes'
 import { useViewer } from '@pascal-app/viewer'
 import Image from 'next/image'
-import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/toolbar-tooltip'
+import {
+  activateBuildTool,
+  activateFenceFeaturePlacement,
+  activateModularCabinetTool,
+  activateRoofFeatureTool,
+  activateRoofType,
+  activateTerrainSculptMode,
+  BASE_BUILD_TYPES,
+  type BuildType,
+  collectBuildTypes,
+  collectRoofFeatures,
+  MEP_ITEMS,
+  MEP_TOOL_KINDS,
+  type MepItem,
+  MODULAR_CABINET_ICON,
+} from '@/lib/build-palette'
 import { getActiveRoofFeatureId, ROOF_TYPE_OPTIONS } from '@/lib/build-tab-state'
 import { cn } from '@/lib/utils'
 
-/**
- * MEP (mechanical / plumbing) tool kinds surfaced under the Build tab's "MEP"
- * group tile — its own sub-grid, like Roof's "Features".
- */
-type MepToolKind =
-  | 'duct-segment'
-  | 'duct-fitting'
-  | 'duct-terminal'
-  | 'hvac-equipment'
-  | 'lineset'
-  | 'liquid-line'
-  | 'pipe-segment'
-  | 'pipe-fitting'
-  | 'pipe-trap'
-
-type BuildType = {
-  /** Selection id — equals `kind` for tool types, with dedicated ids for modes and groups. */
-  id: string
-  label: string
-  /** Raster asset tile (legacy Build sidebar artwork). */
-  iconSrc: string
-  /** Present for structure-tool types (absent for paint mode and the MEP group). */
-  kind?: string
-  paletteOrder?: number
-  /** Non-placement special mode. */
-  mode?: 'material-paint' | 'terrain-sculpt'
-}
-
-type MepItem = {
-  /** Selection id — equals `kind`. */
-  id: string
-  label: string
-  iconSrc: string
-  kind: MepToolKind
-}
-
-// Same icons + ordering as the community Build sidebar, minus presets.
-const BASE_BUILD_TYPES: BuildType[] = [
-  { id: 'wall', label: 'Wall', iconSrc: '/icons/wall.webp', kind: 'wall' },
-  { id: 'fence', label: 'Fence', iconSrc: '/icons/fence.webp', kind: 'fence' },
-  { id: 'slab', label: 'Slab', iconSrc: '/icons/floor.webp', kind: 'slab' },
-  { id: 'ceiling', label: 'Ceiling', iconSrc: '/icons/ceiling.webp', kind: 'ceiling' },
-  { id: 'roof', label: 'Roof', iconSrc: '/icons/roof.webp', kind: 'roof' },
-  { id: 'stair', label: 'Stairs', iconSrc: '/icons/stairs.webp', kind: 'stair' },
-  { id: 'elevator', label: 'Elevator', iconSrc: '/icons/elevator.webp', kind: 'elevator' },
-  { id: 'door', label: 'Door', iconSrc: '/icons/door.webp', kind: 'door' },
-  { id: 'window', label: 'Window', iconSrc: '/icons/window.webp', kind: 'window' },
-  { id: 'column', label: 'Column', iconSrc: '/icons/column.webp', kind: 'column' },
-  { id: 'shelf', label: 'Shelf', iconSrc: '/icons/shelf.webp', kind: 'shelf' },
-  { id: 'spawn', label: 'Spawn Point', iconSrc: '/icons/spawn-point.webp', kind: 'spawn' },
-  { id: 'kitchen', label: 'Kitchen', iconSrc: '/icons/kitchen.webp' },
-  // Group tile — no tool of its own; opens the MEP sub-grid below (like Roof).
-  { id: 'mep', label: 'MEP', iconSrc: '/icons/HVAC.webp' },
-  { id: 'painting', label: 'Painting', iconSrc: '/icons/paint.webp', mode: 'material-paint' },
-  { id: 'terrain', label: 'Terrain', iconSrc: '/icons/mesh.webp', mode: 'terrain-sculpt' },
-]
-
 const subscribeToClientMount = () => () => {}
-
-function collectBuildTypes(floorplanMode: FloorplanMode): BuildType[] {
-  const baseKinds = new Set(BASE_BUILD_TYPES.flatMap((type) => (type.kind ? [type.kind] : [])))
-  // A host can register a subset of the built-in plugin, which is how a kind is turned off: the
-  // registry is the statement of what a scene may contain. The list above is written out by hand, so
-  // without this check the palette offers a tool for a kind that was deliberately left out, and
-  // clicking it selects a tool that can draw nothing. Entries carrying no kind are not nodes at all
-  // (paint, measure) and are appended untouched below.
-  const tools = BASE_BUILD_TYPES.filter(
-    (type) => type.kind && nodeRegistry.has(type.kind),
-  ).map((type, index) => ({
-    ...type,
-    paletteOrder:
-      nodeRegistry.get(type.kind!)?.presentation?.paletteOrder ?? type.paletteOrder ?? index * 10,
-  }))
-  for (const [kind, definition] of nodeRegistry.entries()) {
-    const presentation = definition.presentation
-    const extension = getFloorplanNodeExtension(definition)
-    if (
-      baseKinds.has(kind) ||
-      definition.presentation?.paletteGroup === 'roof-features' ||
-      !extension?.tool ||
-      !isFloorplanToolAvailableInMode(extension.availableModes, floorplanMode) ||
-      !presentation ||
-      presentation.hidden ||
-      presentation.paletteSection !== 'structure'
-    ) {
-      continue
-    }
-    tools.push({
-      id: kind,
-      kind,
-      label: presentation.label,
-      iconSrc: presentation.icon.kind === 'url' ? presentation.icon.src : '/icons/spawn-point.webp',
-      paletteOrder: presentation.paletteOrder ?? Number.MAX_SAFE_INTEGER,
-    })
-  }
-  tools.sort((left, right) => (left.paletteOrder ?? 0) - (right.paletteOrder ?? 0))
-  // A group tile has no kind of its own and opens a sub-grid. MEP's sub-grid is written out by hand
-  // like the base list, so a host that registered none of those kinds gets a tile that opens onto
-  // nothing.
-  const mepAvailable = MEP_ITEMS.some((item) => nodeRegistry.has(item.kind))
-
-  return [
-    ...tools,
-    ...BASE_BUILD_TYPES.filter((type) => !type.kind && (type.id !== 'mep' || mepAvailable)),
-  ]
-}
-
-// MEP sub-grid surfaced under the "MEP" tile — same icons + ordering the MEP
-// tools had in the community Build sidebar.
-const MEP_ITEMS: MepItem[] = [
-  { id: 'duct-segment', label: 'Duct', iconSrc: '/icons/duct.webp', kind: 'duct-segment' },
-  {
-    id: 'duct-terminal',
-    label: 'Register',
-    iconSrc: '/icons/registers.webp',
-    kind: 'duct-terminal',
-  },
-  { id: 'hvac-equipment', label: 'HVAC Unit', iconSrc: '/icons/HVAC.webp', kind: 'hvac-equipment' },
-  { id: 'lineset', label: 'Lineset', iconSrc: '/icons/lineset.webp', kind: 'lineset' },
-  { id: 'liquid-line', label: 'Liquid Line', iconSrc: '/icons/lineset.webp', kind: 'liquid-line' },
-  { id: 'pipe-segment', label: 'DWV Pipe', iconSrc: '/icons/dwv-pipes.webp', kind: 'pipe-segment' },
-]
-
-const MODULAR_CABINET_CATALOG_ITEM = CATALOG_ITEMS.find((item) => item.id === 'cabinet')
-const MODULAR_CABINET_ICON = MODULAR_CABINET_CATALOG_ITEM?.thumbnail ?? '/icons/item.webp'
-
-/**
- * Activate a raw structure draw/cursor tool. Mirrors the editor's own
- * structure-tool activation (`setPhase`/`setStructureLayer`/`setMode`/`setTool`).
- */
-function activateBuildTool(kind: string): void {
-  const ed = useEditor.getState()
-  const definition = nodeRegistry.get(kind)
-  const extension = getFloorplanNodeExtension(definition)
-  if (
-    !isFloorplanToolAvailableInMode(extension?.availableModes, useFloorplanMode.getState().mode)
-  ) {
-    useFloorplanMode.getState().showExpertModeNotice(definition?.presentation?.label ?? kind)
-    return
-  }
-  const preferredView = extension?.preferredView
-  if (preferredView) ed.setViewMode(preferredView)
-  ed.setPhase('structure')
-  ed.setStructureLayer('elements')
-  ed.setCatalogCategory(null)
-  ed.setToolDefaults(kind, null)
-  ed.setMode('build')
-  ed.setTool(kind)
-}
-
-function activateModularCabinetTool(): void {
-  const ed = useEditor.getState()
-  useViewer.getState().setSelection({ selectedIds: [], zoneId: null })
-  if (MODULAR_CABINET_CATALOG_ITEM) ed.setSelectedItem(MODULAR_CABINET_CATALOG_ITEM)
-  ed.setPhase('structure')
-  ed.setStructureLayer('elements')
-  ed.setCatalogCategory(null)
-  ed.setMode('build')
-  ed.setTool('cabinet')
-}
-
-/** Enter material-paint mode — the Build tab's "Painting" category. */
-function activatePaintMode(): void {
-  const ed = useEditor.getState()
-  ed.setPhase('structure')
-  ed.setStructureLayer('elements')
-  ed.setMode('material-paint')
-}
-
-/**
- * Enter terrain-sculpt mode — the Build tab's "Terrain" category. No `setPhase`:
- * `setMode` moves to the site phase itself, since sculpting is a site-phase mode.
- */
-function activateTerrainSculptMode(): void {
-  useEditor.getState().setMode('terrain-sculpt')
-}
-
-type RoofFeature = {
-  id: string
-  label: string
-  iconSrc: string
-  kind?: string
-}
-
-const ROOF_FEATURE_FALLBACK_ICON = '/icons/roof.webp'
-
-function collectRoofFeatures(): RoofFeature[] {
-  const features: RoofFeature[] = []
-  for (const [kind, def] of nodeRegistry.entries()) {
-    if (
-      def.capabilities.roofAccessory === undefined &&
-      def.presentation?.paletteGroup !== 'roof-features'
-    ) {
-      continue
-    }
-    if (def.capabilities.wallOpeningPlacement) continue
-    const icon = def.presentation?.icon
-    features.push({
-      id: kind,
-      kind,
-      label: def.presentation?.label ?? kind,
-      iconSrc: icon?.kind === 'url' ? icon.src : ROOF_FEATURE_FALLBACK_ICON,
-    })
-  }
-  return features
-}
-
-/**
- * Roof accessories and extensions surfaced under the Roof tile. Unlike the
- * community editor these aren't DB presets — each is a registry kind, either
- * carrying `capabilities.roofAccessory` or explicitly classified as a roof
- * extension. They are enumerated at render time because the registry is
- * populated during app bootstrap. Label + icon come from `presentation`;
- * non-url icons fall back to the roof icon.
- */
-function activateRoofFeatureTool(feature: RoofFeature): void {
-  const ed = useEditor.getState()
-  ed.setPhase('structure')
-  ed.setStructureLayer('elements')
-  ed.setCatalogCategory(null)
-  ed.setMode('build')
-  if (feature.kind) ed.setTool(feature.kind)
-}
-
-function activateRoofType(roofType: RoofType): void {
-  const editor = useEditor.getState()
-  if (!(editor.mode === 'build' && editor.tool === 'roof')) activateBuildTool('roof')
-  editor.setToolDefaults('roof', { ...editor.toolDefaults.roof, roofType })
-}
 
 /**
  * Build tab for the open-source standalone editor — a preset-less replica of
  * the community Build sidebar. Clicking a type activates its raw tool, drawn
- * with the kind's own `def.defaults()`. The "Painting" type swaps in the
- * material-paint panel.
+ * with the kind's own `def.defaults()`. Painting has its own rail panel.
  */
-// MEP tool kinds that, when active, mean the MEP group tile (and its sub-grid)
-// is what the user is working in.
-const MEP_TOOL_KINDS = new Set<string>([
-  ...MEP_ITEMS.map((item) => item.kind),
-  'duct-fitting',
-  'pipe-fitting',
-  'pipe-trap',
-])
-
 export function BuildTab() {
+  const [mepOpen, setMepOpen] = useState(false)
   const activeTool = useEditor((s) => s.tool)
+  const selectedId = useViewer((s) => s.selection.selectedIds[0])
+  const selectedFenceFeature = useScene((s) => {
+    const selected = selectedId ? s.nodes[selectedId as AnyNodeId] : undefined
+    return isFenceFeatureNode(selected) ? selected : undefined
+  })
+  const selectedFence = useScene((s) => {
+    const selected = selectedId ? s.nodes[selectedId as AnyNodeId] : undefined
+    const host =
+      isFenceFeatureNode(selected) && selected.parentId
+        ? s.nodes[selected.parentId as AnyNodeId]
+        : selected
+    return host?.type === 'fence' ? host : undefined
+  })
   const mode = useEditor((s) => s.mode)
+  const isTerraceActive = useTerraceDraft((s) => !!s.host)
   const roofDefaults = useEditor((s) => s.toolDefaults.roof)
+  const fenceDefaults = useEditor((s) => s.toolDefaults.fence)
+  const placingFenceFeature =
+    mode === 'build' && activeTool === 'fence' ? fenceDefaults?.featurePlacement : undefined
   const floorplanMode = useFloorplanMode((s) => s.mode)
+  const wallVariant = useWallDrawVariant()
   const follow = useLiquidLineToolOptions((s) => s.follow)
   const toggleFollow = useLiquidLineToolOptions((s) => s.toggleFollow)
   useRegistryVersion()
@@ -291,24 +93,15 @@ export function BuildTab() {
   )
   const buildTypes = registryReady ? collectBuildTypes(floorplanMode) : BASE_BUILD_TYPES
 
-  // The fitting / follow tools are armed from a segment's panel, not a grid
-  // tile — keep the segment tile lit so the panel (and the way back) stays
-  // visible.
   const ductContext =
     mode === 'build' && (activeTool === 'duct-segment' || activeTool === 'duct-fitting')
   const pipeContext =
     mode === 'build' &&
     (activeTool === 'pipe-segment' || activeTool === 'pipe-fitting' || activeTool === 'pipe-trap')
   const liquidLineContext = mode === 'build' && activeTool === 'liquid-line'
+  const fenceContext = !!selectedFence || (mode === 'build' && activeTool === 'fence')
 
-  const isMepItemActive = (item: MepItem) =>
-    item.kind === 'duct-segment'
-      ? ductContext
-      : item.kind === 'pipe-segment'
-        ? pipeContext
-        : item.kind === 'liquid-line'
-          ? liquidLineContext
-          : mode === 'build' && activeTool === item.kind
+  const isMepItemActive = (item: MepItem) => mode === 'build' && activeTool === item.kind
 
   // Read at render time (not module scope): the registry is populated by the
   // app bootstrap, so enumerating earlier would race it and see no kinds.
@@ -322,7 +115,9 @@ export function BuildTab() {
   // active tool, the same way MEP stays lit for its sub-grid tools.
   const activeRoofFeatureId = getActiveRoofFeatureId(roofFeatures, activeTool)
   const isRoofFeatureActive = mode === 'build' && activeRoofFeatureId !== null
-  const isMepActive = mode === 'build' && !!activeTool && MEP_TOOL_KINDS.has(activeTool)
+  const isMepActive =
+    (mode === 'build' && !!activeTool && MEP_TOOL_KINDS.has(activeTool)) ||
+    (mode === 'select' && mepOpen)
   const isKitchenActive = mode === 'build' && activeTool === 'cabinet'
   const parsedRoofType = RoofTypeSchema.safeParse(roofDefaults?.roofType)
   const activeRoofType = parsedRoofType.success ? parsedRoofType.data : 'gable'
@@ -331,99 +126,105 @@ export function BuildTab() {
     if (type.mode) return mode === type.mode
     if (type.id === 'mep') return isMepActive
     if (type.id === 'kitchen') return isKitchenActive
+    if (type.id === 'terrace') return isTerraceActive
     if (type.id === 'roof')
       return mode === 'build' && (activeTool === 'roof' || isRoofFeatureActive)
+    if (type.id === 'fence' && selectedFence) return true
     return mode === 'build' && activeTool === type.kind
   }
 
-  const handleTypeClick = useCallback((type: BuildType) => {
-    if (type.mode === 'material-paint') {
-      activatePaintMode()
-    } else if (type.mode === 'terrain-sculpt') {
-      activateTerrainSculptMode()
-    } else if (type.id === 'mep') {
-      // MEP is a group tile: arm its first tool so a usable tool is active
-      // (and we leave any prior paint mode), then reveal the MEP sub-grid. Its first tool rather
-      // than a named one, because a host may have registered only some of the sub-grid.
-      const armed = MEP_ITEMS.find((item) => nodeRegistry.has(item.kind))
-      if (armed) {
-        activateBuildTool(armed.kind)
+  const handleTypeClick = useCallback(
+    (type: BuildType) => {
+      setMepOpen(type.id === 'mep')
+      if (type.id === 'fence' && selectedFence) return
+      if (type.mode === 'terrain-sculpt') {
+        activateTerrainSculptMode()
+      } else if (type.id === 'mep') {
+        const ed = useEditor.getState()
+        ed.setPhase('building')
+        ed.setCatalogCategory(null)
+        ed.setMode('build')
+        ed.setTool(null)
+      } else if (type.id === 'kitchen') {
+        activateModularCabinetTool()
+      } else if (type.id === 'terrace') {
+        startTerraceDraft()
+      } else if (type.kind) {
+        activateBuildTool(type.kind)
       }
-    } else if (type.id === 'kitchen') {
-      activateModularCabinetTool()
-    } else if (type.kind) {
-      activateBuildTool(type.kind)
-    }
-  }, [])
+    },
+    [selectedFence],
+  )
 
   // On open, land on the first build tool — parity with the community Build
   // sidebar, so switching to Build immediately arms a usable tool. Skip when a
-  // build tool is already active (e.g. the B shortcut armed one before this
-  // panel mounted): the active tool is the source of truth, not this default.
+  // Build-tab tool or special mode is already active: the current editor state
+  // is the source of truth, including entry from another panel.
   const didInitRef = useRef(false)
   useEffect(() => {
     if (didInitRef.current) return
     didInitRef.current = true
+    if (selectedFence) return
     const ed = useEditor.getState()
+    if (ed.mode === 'terrain-sculpt') return
     if (ed.mode === 'build' && ed.tool) return
     const firstType = buildTypes.find((t) => t.kind)
     if (firstType) handleTypeClick(firstType)
-  }, [buildTypes, handleTypeClick])
+  }, [buildTypes, handleTypeClick, selectedFence])
+
+  const renderTile = (type: BuildType) => (
+    <BuildToolTile
+      active={isTypeActive(type)}
+      data-build-tool={type.id}
+      iconSrc={type.iconSrc}
+      key={type.id}
+      label={type.label}
+      onClick={() => {
+        triggerSFX('sfx:menu-click')
+        handleTypeClick(type)
+      }}
+      onMouseEnter={() => triggerSFX('sfx:menu-hover')}
+      title={type.label}
+    />
+  )
+  const typesIn = (section: NonNullable<BuildType['section']>) =>
+    buildTypes.filter((type) => type.section === section)
+  const advancedTypes = typesIn('advanced')
 
   return (
-    <div className="flex h-full flex-col gap-3 p-3">
-      <TooltipProvider delayDuration={0} disableHoverableContent>
-        <div
-          className="grid gap-1.5"
-          style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(56px, 1fr))' }}
+    <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
+      <div className="flex flex-col gap-3 [&>section+section]:border-border/60 [&>section+section]:border-t [&>section+section]:pt-3">
+        <BuildPanelRoomsSection
+          activeVariant={mode === 'build' && activeTool === 'wall' ? wallVariant : null}
+          onHover={() => triggerSFX('sfx:menu-hover')}
+          onSelect={(variant) => {
+            triggerSFX('sfx:menu-click')
+            selectWallDrawVariant(variant)
+            const editor = useEditor.getState()
+            if (!(editor.mode === 'build' && editor.tool === 'wall')) activateBuildTool('wall')
+          }}
+        />
+        <BuildPanelSection id="add" title="Add to rooms">
+          <BuildToolGrid columns={4}>{typesIn('add').map(renderTile)}</BuildToolGrid>
+        </BuildPanelSection>
+        <BuildPanelSection id="outdoor" title="Outdoor">
+          <BuildToolGrid columns={4}>{typesIn('outdoor').map(renderTile)}</BuildToolGrid>
+        </BuildPanelSection>
+        <BuildPanelAdvancedSection
+          containsActiveTool={advancedTypes.some(isTypeActive)}
+          description="Rooms already create their floor and ceiling. Use these for platforms and one-off structure."
+          hint="Slab, ceiling, column…"
         >
-          {buildTypes.map((type) => {
-            const active = isTypeActive(type)
-            return (
-              <Tooltip key={type.id}>
-                <TooltipTrigger asChild>
-                  <button
-                    className={cn(
-                      'group relative flex aspect-square items-center justify-center rounded-xl p-1 transition-all duration-200',
-                      active
-                        ? 'bg-primary/10 ring-1 ring-primary/50'
-                        : 'bg-muted/40 opacity-70 grayscale hover:bg-muted hover:opacity-100 hover:grayscale-0',
-                    )}
-                    onClick={() => {
-                      triggerSFX('sfx:menu-click')
-                      handleTypeClick(type)
-                    }}
-                    onMouseEnter={() => triggerSFX('sfx:menu-hover')}
-                    type="button"
-                  >
-                    <Image
-                      alt={type.label}
-                      className="size-full object-contain transition-transform duration-200 group-hover:scale-110"
-                      height={48}
-                      src={type.iconSrc}
-                      width={48}
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent className="pointer-events-none" side="top">
-                  {type.label}
-                </TooltipContent>
-              </Tooltip>
-            )
-          })}
-        </div>
-      </TooltipProvider>
+          <BuildToolGrid columns={4}>{advancedTypes.map(renderTile)}</BuildToolGrid>
+        </BuildPanelAdvancedSection>
+      </div>
 
-      {mode === 'material-paint' ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <MaterialPaintPanel />
-        </div>
-      ) : mode === 'terrain-sculpt' ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+      {mode === 'terrain-sculpt' ? (
+        <div className="border-border/60 border-t pt-3">
           <TerrainSculptPanel />
         </div>
       ) : mode === 'build' && (activeTool === 'roof' || isRoofFeatureActive) ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+        <div className="flex flex-col gap-3 border-border/60 border-t pt-3">
           <div className="flex flex-col gap-2">
             <div className="px-0.5 pt-1 font-medium text-muted-foreground text-xs">Roof type</div>
             <div className="grid grid-cols-2 gap-1.5">
@@ -517,8 +318,138 @@ export function BuildTab() {
             </div>
           ) : null}
         </div>
+      ) : fenceContext ? (
+        <div className="flex flex-col gap-3 border-border/50 border-t pt-3">
+          <div className="px-0.5 font-medium text-muted-foreground text-xs">Fence features</div>
+          <BuildToolGrid columns={4}>
+            {(['gate', 'opening'] as const).map((kind) => (
+              <BuildToolTile
+                active={placingFenceFeature === kind}
+                iconSrc={kind === 'gate' ? '/icons/gate.webp' : '/icons/open-passage.webp'}
+                key={kind}
+                label={kind === 'gate' ? 'Gate' : 'Opening'}
+                onClick={() => {
+                  triggerSFX('sfx:menu-click')
+                  activateFenceFeaturePlacement(kind)
+                }}
+                onMouseEnter={() => triggerSFX('sfx:menu-hover')}
+                title={kind === 'gate' ? 'Add Gate' : 'Add Open Passage'}
+              />
+            ))}
+          </BuildToolGrid>
+          {selectedFenceFeature && (
+            <label className="flex items-center justify-between text-xs">
+              Match fence style
+              <input
+                aria-label="Match fence style"
+                type="checkbox"
+                checked={selectedFenceFeature.matchFenceStyle !== false}
+                onChange={(event) =>
+                  useScene.getState().updateNode(selectedFenceFeature.id, {
+                    matchFenceStyle: event.currentTarget.checked,
+                  })
+                }
+              />
+            </label>
+          )}
+          {!!placingFenceFeature && (
+            <div className="space-y-2 text-xs">
+              <p>
+                Hover a fence to preview. Click to place. Esc cancels. Leave room between openings.
+              </p>
+              {typeof fenceDefaults?.featurePlacementFeedback === 'string' && (
+                <p role="status" className="text-amber-400">
+                  {fenceDefaults.featurePlacementFeedback}
+                </p>
+              )}
+              <label className="flex items-center justify-between">
+                Match fence style
+                <input
+                  type="checkbox"
+                  checked={fenceDefaults?.featureMatchStyle !== false}
+                  onChange={(event) =>
+                    useEditor.getState().setToolDefaults('fence', {
+                      ...fenceDefaults,
+                      featureMatchStyle: event.currentTarget.checked,
+                    })
+                  }
+                />
+              </label>
+              {fenceDefaults?.featureMatchStyle === false && placingFenceFeature === 'gate' && (
+                <label className="flex items-center justify-between">
+                  Gate style
+                  <select
+                    className="rounded border bg-background p-1"
+                    value={
+                      typeof fenceDefaults?.featureStyle === 'string'
+                        ? fenceDefaults.featureStyle
+                        : 'picket'
+                    }
+                    onChange={(event) =>
+                      useEditor.getState().setToolDefaults('fence', {
+                        ...fenceDefaults,
+                        featureStyle: event.currentTarget.value,
+                      })
+                    }
+                  >
+                    <option value="picket">Picket</option>
+                    <option value="slat">Vertical slats</option>
+                    <option value="horizontal">Horizontal boards</option>
+                    <option value="privacy">Solid privacy</option>
+                    <option value="rail">Open rails</option>
+                  </select>
+                </label>
+              )}
+              <label className="flex items-center justify-between">
+                Opening width (m)
+                <input
+                  className="w-20 rounded border bg-background p-1"
+                  type="number"
+                  min={0.35}
+                  max={12}
+                  step={0.05}
+                  value={
+                    typeof fenceDefaults?.featureWidth === 'number'
+                      ? fenceDefaults.featureWidth
+                      : 1.1
+                  }
+                  onChange={(event) => {
+                    const width = event.currentTarget.valueAsNumber
+                    if (Number.isFinite(width) && width >= 0.35)
+                      useEditor.getState().setToolDefaults('fence', {
+                        ...fenceDefaults,
+                        featureWidth: Math.min(12, width),
+                      })
+                  }}
+                />
+              </label>
+              {placingFenceFeature === 'gate' && (
+                <label className="flex items-center justify-between">
+                  Leaves
+                  <select
+                    className="rounded border bg-background p-1"
+                    value={fenceDefaults?.featureLeafType === 'double' ? 'double' : 'single'}
+                    onChange={(event) =>
+                      useEditor.getState().setToolDefaults('fence', {
+                        ...fenceDefaults,
+                        featureLeafType: event.target.value,
+                      })
+                    }
+                  >
+                    <option value="single">Single gate</option>
+                    <option value="double">Double gate</option>
+                  </select>
+                </label>
+              )}
+            </div>
+          )}
+          <p className="px-0.5 text-[11px] text-muted-foreground">
+            Choose Gate or Open Passage, then click its position on any fence. Find placed gates and
+            openings under their fence in the scene graph.
+          </p>
+        </div>
       ) : isKitchenActive ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+        <div className="flex flex-col gap-2 border-border/60 border-t pt-3">
           <div className="px-0.5 pt-1 font-medium text-muted-foreground text-xs">Kitchen</div>
           <TooltipProvider delayDuration={0} disableHoverableContent>
             <div
@@ -553,7 +484,7 @@ export function BuildTab() {
           </TooltipProvider>
         </div>
       ) : isMepActive ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+        <div className="flex flex-col gap-2 border-border/60 border-t pt-3">
           <div className="px-0.5 pt-1 font-medium text-muted-foreground text-xs">MEP</div>
           <TooltipProvider delayDuration={0} disableHoverableContent>
             <div
@@ -566,6 +497,7 @@ export function BuildTab() {
                   <Tooltip key={item.id}>
                     <TooltipTrigger asChild>
                       <button
+                        aria-pressed={active}
                         className={cn(
                           'group relative flex aspect-square items-center justify-center rounded-xl transition-all duration-200',
                           active
@@ -597,89 +529,29 @@ export function BuildTab() {
             </div>
           </TooltipProvider>
 
-          {ductContext ? (
-            <div className="flex flex-col gap-1.5">
-              <span className="text-muted-foreground text-xs">Duct</span>
-              <button
-                className={cn(
-                  'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-all duration-200',
-                  activeTool === 'duct-fitting'
-                    ? 'bg-primary/10 ring-1 ring-primary/50'
-                    : 'bg-muted/40 hover:bg-muted',
-                )}
-                onClick={() => {
-                  triggerSFX('sfx:menu-click')
-                  activateBuildTool(activeTool === 'duct-fitting' ? 'duct-segment' : 'duct-fitting')
+          {(['duct-fitting', 'pipe-fitting'] as const)
+            .filter((kind) => (kind === 'duct-fitting' ? ductContext : pipeContext))
+            .map((kind) => (
+              <ToolOptionsPanel
+                active={activeTool === kind}
+                key={kind}
+                getChoiceThumbnail={(option, value) => {
+                  if (option.id !== 'fittingType') return undefined
+                  if (kind === 'duct-fitting' && value === 'elbow')
+                    return '/icons/duct-fitting.webp'
+                  return `/icons/fittings/${kind === 'duct-fitting' ? 'duct' : 'pipe'}-${value}.webp`
                 }}
-                onMouseEnter={() => triggerSFX('sfx:menu-hover')}
-                type="button"
-              >
-                <Image
-                  alt=""
-                  aria-hidden
-                  className="size-4 object-contain"
-                  height={16}
-                  src="/icons/duct-fitting.webp"
-                  width={16}
-                />
-                Add Fitting
-              </button>
-            </div>
-          ) : null}
-
-          {pipeContext ? (
-            <div className="flex flex-col gap-1.5">
-              <span className="text-muted-foreground text-xs">DWV Pipe</span>
-              <button
-                className={cn(
-                  'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-all duration-200',
-                  activeTool === 'pipe-fitting'
-                    ? 'bg-primary/10 ring-1 ring-primary/50'
-                    : 'bg-muted/40 hover:bg-muted',
-                )}
-                onClick={() => {
-                  triggerSFX('sfx:menu-click')
-                  activateBuildTool(activeTool === 'pipe-fitting' ? 'pipe-segment' : 'pipe-fitting')
+                kind={kind}
+                onSelect={(option, value) => {
+                  if (activeTool !== kind) {
+                    const defaults = useEditor.getState().toolDefaults[kind]
+                    activateBuildTool(kind)
+                    if (defaults) useEditor.getState().setToolDefaults(kind, defaults)
+                  }
+                  option.set(value)
                 }}
-                onMouseEnter={() => triggerSFX('sfx:menu-hover')}
-                type="button"
-              >
-                <Image
-                  alt=""
-                  aria-hidden
-                  className="size-4 object-contain"
-                  height={16}
-                  src="/icons/duct-fitting.webp"
-                  width={16}
-                />
-                Add Fitting
-              </button>
-              <button
-                className={cn(
-                  'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-all duration-200',
-                  activeTool === 'pipe-trap'
-                    ? 'bg-primary/10 ring-1 ring-primary/50'
-                    : 'bg-muted/40 hover:bg-muted',
-                )}
-                onClick={() => {
-                  triggerSFX('sfx:menu-click')
-                  activateBuildTool(activeTool === 'pipe-trap' ? 'pipe-segment' : 'pipe-trap')
-                }}
-                onMouseEnter={() => triggerSFX('sfx:menu-hover')}
-                type="button"
-              >
-                <Image
-                  alt=""
-                  aria-hidden
-                  className="size-4 object-contain"
-                  height={16}
-                  src="/icons/dwv-pipes.webp"
-                  width={16}
-                />
-                Add Trap
-              </button>
-            </div>
-          ) : null}
+              />
+            ))}
 
           {liquidLineContext ? (
             <div className="flex flex-col gap-1.5">

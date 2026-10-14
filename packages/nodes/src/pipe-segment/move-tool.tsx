@@ -11,6 +11,7 @@ import {
   useScene,
 } from '@pascal-app/core'
 import {
+  copyCollectionIds,
   DragBoundingBox,
   EDITOR_LAYER,
   isAlignmentGuideActive,
@@ -31,6 +32,7 @@ import {
   resolveGhostAlignment,
 } from '../shared/ghost-alignment'
 import { type RunMoveConnectivity, startRunMoveConnectivity } from '../shared/run-move-connectivity'
+import { translateWallRun } from '../shared/wall-run-move'
 
 type Vec3 = [number, number, number]
 
@@ -40,7 +42,7 @@ const IN_TO_M = 0.0254
 
 /** Snap a coordinate to the editor's live grid step. */
 function snapToGridStep(value: number): number {
-  const step = useEditor.getState().gridSnapStep
+  const step = isGridSnapActive() ? useEditor.getState().gridSnapStep : 0
   if (step <= 0) return value
   return Math.round(value / step) * step
 }
@@ -111,6 +113,7 @@ export const MovePipeSegmentTool: React.FC<{ node: AnyNode }> = ({ node }) => {
   const hasMovedRef = useRef(false)
   const activatedAtRef = useRef<number>(Date.now())
   const prevSnapRef = useRef<[number, number] | null>(null)
+  const previewAttachmentRef = useRef(pipe.wallAttachment)
 
   useEffect(() => {
     const nodeId = node.id as AnyNodeId
@@ -151,6 +154,19 @@ export const MovePipeSegmentTool: React.FC<{ node: AnyNode }> = ({ node }) => {
     }
 
     const onMove = (event: GridEvent) => {
+      const attachedWall = pipe.wallAttachment
+        ? (useScene.getState().nodes[pipe.wallAttachment.wallId] as AnyNode | undefined)
+        : undefined
+      if (pipe.wallAttachment && attachedWall?.type === 'wall') {
+        const wallMove = translateWallRun(originalPath, pipe.wallAttachment, attachedWall, event)
+        if (wallMove) {
+          hasMovedRef.current = true
+          previewAttachmentRef.current = wallMove.attachment
+          setPreview(wallMove.path)
+          connectivity?.preview({ path: wallMove.path })
+          return
+        }
+      }
       const snap = isGridSnapActive() ? snapToGridStep : (v: number) => v
       let dx = snap(event.localPosition[0] - centerX)
       let dz = snap(event.localPosition[2] - centerZ)
@@ -210,21 +226,32 @@ export const MovePipeSegmentTool: React.FC<{ node: AnyNode }> = ({ node }) => {
         const created = PipeSegmentNode.parse({
           ...(node as Record<string, unknown>),
           path: finalPath,
+          wallAttachment: previewAttachmentRef.current,
           metadata: stripPlacementMetadataFlags(node.metadata),
           visible: true,
         })
-        useScene.getState().createNode(created as AnyNode, node.parentId as AnyNodeId)
+        useScene.getState().createNodes([
+          {
+            node: created as AnyNode,
+            parentId: node.parentId as AnyNodeId,
+            collectionIds: copyCollectionIds(node),
+          },
+        ])
         selectId = created.id as AnyNodeId
       } else {
         // Fold connected-fitting / sibling-run follow-updates into the SAME
         // batch as the moved run so the whole joint is one undo step.
         const followUpdates = connectivity?.commitUpdates({ path: finalPath }) ?? []
-        useScene
-          .getState()
-          .updateNodes([
-            { id: nodeId, data: { path: finalPath } as Partial<AnyNode> },
-            ...followUpdates,
-          ])
+        useScene.getState().updateNodes([
+          {
+            id: nodeId,
+            data: {
+              path: finalPath,
+              wallAttachment: previewAttachmentRef.current,
+            } as Partial<AnyNode>,
+          },
+          ...followUpdates,
+        ])
         useScene.getState().markDirty(nodeId)
       }
       useScene.temporal.getState().pause()

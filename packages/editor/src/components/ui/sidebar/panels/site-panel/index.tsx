@@ -2,10 +2,9 @@ import {
   type AnyNode,
   type AnyNodeId,
   type BuildingNode,
-  DEFAULT_LEVEL_HEIGHT,
   emitter,
   type GuideNode,
-  LevelNode,
+  type LevelNode,
   type ScanNode,
   type SiteNode,
   useScene,
@@ -19,6 +18,9 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Boxes,
+  Group,
+  LayoutGrid,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -28,7 +30,18 @@ import {
   X,
 } from 'lucide-react'
 import { AnimatePresence, LayoutGroup, motion } from 'motion/react'
-import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { type ComponentType, lazy, memo, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { nodeRegistry } from '@pascal-app/core'
+
+/** The site kind's inspector (`parametrics.customPanel`), mounted under the Site header. */
+const SiteKindPanel = lazy(async () => {
+  const def = nodeRegistry.get('site') as
+    | { parametrics?: { customPanel?: () => Promise<{ default: ComponentType }> } }
+    | undefined
+  const loader = def?.parametrics?.customPanel
+  if (!loader) return { default: () => null }
+  return loader()
+})
 import { useShallow } from 'zustand/react/shallow'
 import { ColorDot } from './../../../../../components/ui/primitives/color-dot'
 import {
@@ -39,8 +52,9 @@ import {
 import {
   buildLevelDuplicateCreateOps,
   type LevelDuplicatePreset,
-} from './../../../../../lib/level-duplication'
-import { getDefaultLevelName } from '@pascal-app/core'
+} from '@pascal-app/core/building'
+import { getDefaultLevelName, getLevelDisplayName } from '@pascal-app/core'
+import { addStoreyOnTop } from './../../../../../lib/add-storey'
 import { deleteLevelWithFallbackSelection } from './../../../../../lib/level-selection'
 import {
   formatAreaLabel,
@@ -50,15 +64,24 @@ import {
   metersToLinearUnit,
   squareMetersToAreaUnit,
 } from './../../../../../lib/measurements'
-import { createLocalGuideImage } from './../../../../../lib/local-guide-image'
+import { createLocalGuideImage, createLocalScan } from './../../../../../lib/local-guide-image'
 import { editorHostTreeChildrenRegistry } from './../../../../../lib/host-tree-children'
+import { requestRoomDeletion } from './../../../../../lib/room-structure-commands'
+import {
+  selectZoneOrRoom,
+  useZoneSelected,
+  zoneKindLabel,
+} from './../../../../../lib/room-zone-routing'
+import { createUnitInBuilding, toggleZoneMembership } from './../../../../../lib/units'
 import { cn } from './../../../../../lib/utils'
 import useEditor from './../../../../../store/use-editor'
 import { useUploadStore } from '../../../../../store/use-upload'
 import { MetricControl } from '../../../controls/metric-control'
 import { LevelDuplicateDialog } from '../../../level-duplicate-dialog'
+import { CollectionsSection } from './collection-tree-node'
 import { InlineRenameInput } from './inline-rename-input'
-import { focusTreeNode, TreeNode } from './tree-node'
+import { ZoneMembershipCheckbox } from './zone-membership-checkbox'
+import { focusTreeNode, TreeNode, TreeNodeWrapper } from './tree-node'
 import { TreeNodeDragProvider } from './tree-node-drag'
 
 // ============================================================================
@@ -177,7 +200,7 @@ const PropertyLineSection = memo(function PropertyLineSection() {
           className={cn(
             'flex h-6 w-6 cursor-pointer items-center justify-center rounded transition-colors',
             isEditing
-              ? 'bg-orange-500/20 text-orange-400'
+              ? 'bg-orange-500/20 text-orange-700 dark:text-orange-400'
               : 'text-muted-foreground hover:bg-accent',
           )}
           onClick={handleToggleEdit}
@@ -233,7 +256,7 @@ const PropertyLineSection = memo(function PropertyLineSection() {
                   className={cn(
                     'flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded',
                     points.length > 3
-                      ? 'text-muted-foreground hover:bg-red-500/20 hover:text-red-400'
+                      ? 'text-muted-foreground hover:bg-red-500/20 hover:text-red-600 dark:hover:text-red-400'
                       : 'cursor-not-allowed text-muted-foreground/30',
                   )}
                   disabled={points.length <= 3}
@@ -497,6 +520,7 @@ const LevelReferences = memo(function LevelReferences({
   const deleteNode = useScene((s) => s.deleteNode)
   const setSelection = useViewer((s) => s.setSelection)
   const setShowGuides = useViewer((s) => s.setShowGuides)
+  const setShowScans = useViewer((s) => s.setShowScans)
   const references = useScene(
     useShallow((s) =>
       Object.values(s.nodes).filter(
@@ -566,6 +590,23 @@ const LevelReferences = memo(function LevelReferences({
       return
     }
 
+    if (!onUploadAsset) {
+      useUploadStore.getState().startUpload(levelId, 'scan', file.name)
+      useUploadStore.getState().setStatus(levelId, 'uploading')
+
+      try {
+        const { scan, url } = await createLocalScan({ createNode, file, levelId })
+        setShowScans(true)
+        setSelectedReferenceId(scan.id)
+        setSelection({ selectedIds: [], zoneId: null })
+        useUploadStore.getState().setResult(levelId, url)
+        window.setTimeout(() => useUploadStore.getState().clearUpload(levelId), 600)
+      } catch {
+        useUploadStore.getState().setError(levelId, 'Could not add that scan.')
+      }
+      return
+    }
+
     if (!projectId) {
       useUploadStore.getState().startUpload(levelId, 'scan', file.name)
       useUploadStore.getState().setError(levelId, 'No active project. Please open a project first.')
@@ -573,7 +614,7 @@ const LevelReferences = memo(function LevelReferences({
     }
 
     clearUpload(levelId)
-    onUploadAsset?.(projectId, levelId, file, type)
+    onUploadAsset(projectId, levelId, file, type)
   }
 
   const handleDelete = async (nodeId: string, e: React.MouseEvent) => {
@@ -698,8 +739,7 @@ const LevelItem = memo(function LevelItem({
   const [cameraPopoverOpen, setCameraPopoverOpen] = useState(false)
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
-  const createNodes = useScene((s) => s.createNodes)
-  const updateNodes = useScene((s) => s.updateNodes)
+  const applyNodeChanges = useScene((s) => s.applyNodeChanges)
   const itemRef = useRef<HTMLDivElement>(null)
   const isSelected = selectedLevelId === level.id
   const canDeleteLevel = level.level !== 0
@@ -733,22 +773,14 @@ const LevelItem = memo(function LevelItem({
   }
 
   const handleDuplicateLevel = (preset: LevelDuplicatePreset = 'everything') => {
-    const { createOps, newLevelId, shiftedLevels } = buildLevelDuplicateCreateOps({
+    const { createOps, newLevelId, updateOps } = buildLevelDuplicateCreateOps({
       nodes: useScene.getState().nodes,
       level,
       levels,
       preset,
     })
 
-    if (shiftedLevels.length > 0) {
-      updateNodes(
-        shiftedLevels.map((shiftedLevel) => ({
-          id: shiftedLevel.id as AnyNodeId,
-          data: { level: shiftedLevel.level } as Partial<AnyNode>,
-        })),
-      )
-    }
-    createNodes(createOps)
+    applyNodeChanges({ create: createOps, update: updateOps })
     selectLevel(newLevelId as LevelNode['id'], false)
     setDuplicateDialogOpen(false)
   }
@@ -817,6 +849,7 @@ const LevelItem = memo(function LevelItem({
           />
           <InlineRenameInput
             defaultName={getDefaultLevelName(level.level)}
+            displayName={getLevelDisplayName(level)}
             isEditing={isEditing}
             nodeId={level.id}
             onStartEditing={() => setIsEditing(true)}
@@ -949,7 +982,7 @@ const LevelItem = memo(function LevelItem({
                 precision={2}
                 step={0.05}
                 unit="m"
-                value={Math.round((level.baseElevation ?? 0) * 100) / 100}
+                value={(level.baseElevation ?? 0)}
               />
             </div>
             <LevelReferences
@@ -981,7 +1014,6 @@ const LevelsSection = memo(function LevelsSection({
   onUploadAsset?: (projectId: string, levelId: string, file: File, type: 'scan' | 'guide') => void
   onDeleteAsset?: (projectId: string, url: string) => void
 } = {}) {
-  const createNode = useScene((state) => state.createNode)
   const updateNode = useScene((state) => state.updateNode)
   const selectedBuildingId = useViewer((state) => state.selection.buildingId)
   const selectedLevelId = useViewer((state) => state.selection.levelId)
@@ -1004,13 +1036,7 @@ const LevelsSection = memo(function LevelsSection({
   if (!building) return null
 
   const handleAddLevel = () => {
-    const newLevel = LevelNode.parse({
-      level: levels.length,
-      height: DEFAULT_LEVEL_HEIGHT,
-      children: [],
-      parentId: building.id,
-    })
-    createNode(newLevel, building.id)
+    const newLevel = addStoreyOnTop(building.id)
     setSelection({ buildingId: building.id, levelId: newLevel.id })
   }
 
@@ -1060,150 +1086,100 @@ const LevelsSection = memo(function LevelsSection({
   )
 })
 
-const LayerToggle = memo(function LayerToggle() {
-  const structureLayer = useEditor((state) => state.structureLayer)
-  const setStructureLayer = useEditor((state) => state.setStructureLayer)
-  const phase = useEditor((state) => state.phase)
-  const setPhase = useEditor((state) => state.setPhase)
+const UnitsSection = memo(function UnitsSection({
+  buildingId,
+}: {
+  buildingId: BuildingNode['id']
+}) {
+  const unitIds = useScene(
+    useShallow((s) => {
+      const building = s.nodes[buildingId] as BuildingNode | undefined
+      return (building?.children ?? []).filter((id) => s.nodes[id]?.type === 'unit')
+    }),
+  )
+  const hasUnits = unitIds.length > 0
+  const [expanded, setExpanded] = useState(hasUnits)
 
-  const activeTab =
-    phase === 'structure' && structureLayer === 'elements'
-      ? 'structure'
-      : phase === 'furnish'
-        ? 'furnish'
-        : phase === 'structure' && structureLayer === 'zones'
-          ? 'zones'
-          : 'none'
+  useEffect(() => {
+    if (hasUnits) setExpanded(true)
+  }, [hasUnits])
+
+  const handleNewUnit = (event: React.MouseEvent) => {
+    event.stopPropagation()
+    createUnitInBuilding(buildingId)
+    setExpanded(true)
+  }
 
   return (
-    <div className="relative flex items-center gap-1 border-border/50 border-b bg-[#2C2C2E] p-1">
-      <button
-        className={cn(
-          'relative flex flex-1 cursor-pointer flex-col items-center justify-center rounded-md py-2 font-medium text-[10px] transition-all duration-200',
-          activeTab === 'structure'
-            ? 'text-foreground'
-            : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
-        )}
-        onClick={() => {
-          setPhase('structure')
-          setStructureLayer('elements')
-        }}
-      >
-        {activeTab === 'structure' && (
-          <motion.div
-            className="absolute inset-0 rounded-md bg-[#3e3e3e] shadow-sm ring-1 ring-border/50"
-            layoutId="layerToggleActiveBg"
-            transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
-          />
-        )}
-        <div className="relative z-10 flex flex-col items-center">
-          <img
-            alt="Structure"
-            className={cn(
-              'mb-1 h-6 w-6 transition-all',
-              activeTab !== 'structure' && 'opacity-50 grayscale',
-            )}
-            src="/icons/room.webp"
-          />
-          Structure
-        </div>
-        <div className="absolute right-1.5 bottom-1 z-10 rounded border border-border/40 bg-background/40 px-1 py-[2px] backdrop-blur-md">
-          <span className="block font-medium font-mono text-[9px] text-muted-foreground/70 leading-none">
-            B
+    <div className="subtle-scrollbar max-h-72 shrink-0 overflow-y-auto overflow-x-hidden">
+      <TreeNodeWrapper
+        actions={
+          <button
+            className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
+            onClick={handleNewUnit}
+            title="New unit"
+            type="button"
+          >
+            <Plus className="h-3 w-3" />
+          </button>
+        }
+        depth={1}
+        expanded={expanded}
+        hasChildren
+        icon={<Group className="h-3.5 w-3.5" />}
+        label={
+          <span className="flex items-center gap-1.5">
+            Units
+            {hasUnits && <span className="text-muted-foreground text-xs">{unitIds.length}</span>}
           </span>
-        </div>
-      </button>
-
-      <button
-        className={cn(
-          'relative flex flex-1 cursor-pointer flex-col items-center justify-center rounded-md py-2 font-medium text-[10px] transition-all duration-200',
-          activeTab === 'furnish'
-            ? 'text-foreground'
-            : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
-        )}
-        onClick={() => {
-          setPhase('furnish')
-        }}
+        }
+        onClick={() => setExpanded((value) => !value)}
+        onToggle={() => setExpanded((value) => !value)}
       >
-        {activeTab === 'furnish' && (
-          <motion.div
-            className="absolute inset-0 rounded-md bg-[#3e3e3e] shadow-sm ring-1 ring-border/50"
-            layoutId="layerToggleActiveBg"
-            transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
-          />
-        )}
-        <div className="relative z-10 flex flex-col items-center">
-          <img
-            alt="Furnish"
-            className={cn(
-              'mb-1 h-6 w-6 transition-all',
-              activeTab !== 'furnish' && 'opacity-50 grayscale',
-            )}
-            src="/icons/couch.webp"
-          />
-          Furnish
-        </div>
-        <div className="absolute right-1.5 bottom-1 z-10 rounded border border-border/40 bg-background/40 px-1 py-[2px] backdrop-blur-md">
-          <span className="block font-medium font-mono text-[9px] text-muted-foreground/70 leading-none">
-            F
-          </span>
-        </div>
-      </button>
-
-      <button
-        className={cn(
-          'relative flex flex-1 cursor-pointer flex-col items-center justify-center rounded-md py-2 font-medium text-[10px] transition-all duration-200',
-          activeTab === 'zones'
-            ? 'text-foreground'
-            : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
-        )}
-        onClick={() => {
-          setPhase('structure')
-          setStructureLayer('zones')
-        }}
-      >
-        {activeTab === 'zones' && (
-          <motion.div
-            className="absolute inset-0 rounded-md bg-[#3e3e3e] shadow-sm ring-1 ring-border/50"
-            layoutId="layerToggleActiveBg"
-            transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
-          />
-        )}
-        <div className="relative z-10 flex flex-col items-center">
-          <img
-            alt="Zones"
-            className={cn(
-              'mb-1 h-6 w-6 transition-all',
-              activeTab !== 'zones' && 'opacity-50 grayscale',
-            )}
-            src="/icons/kitchen.webp"
-          />
-          Zones
-        </div>
-        <div className="absolute right-1.5 bottom-1 z-10 rounded border border-border/40 bg-background/40 px-1 py-[2px] backdrop-blur-md">
-          <span className="block font-medium font-mono text-[9px] text-muted-foreground/70 leading-none">
-            Z
-          </span>
-        </div>
-      </button>
+        {unitIds.map((unitId) => (
+          <TreeNode depth={2} key={unitId} nodeId={unitId} />
+        ))}
+        <TreeNodeWrapper
+          depth={2}
+          expanded={false}
+          hasChildren={false}
+          icon={<Plus className="h-3.5 w-3.5" />}
+          isLast
+          label="New unit"
+          onClick={handleNewUnit}
+          onToggle={() => {}}
+        />
+      </TreeNodeWrapper>
     </div>
   )
 })
 
-const ZoneItem = memo(function ZoneItem({ zone, isLast }: { zone: ZoneNode; isLast?: boolean }) {
+const ZoneItem = memo(function ZoneItem({
+  zone,
+  depth,
+  isLast,
+}: {
+  zone: ZoneNode
+  depth: number
+  isLast?: boolean
+}) {
   const [isEditing, setIsEditing] = useState(false)
   const [cameraPopoverOpen, setCameraPopoverOpen] = useState(false)
   const deleteNode = useScene((state) => state.deleteNode)
   const updateNode = useScene((state) => state.updateNode)
-  const selectedZoneId = useViewer((state) => state.selection.zoneId)
+  const focusedUnitId = useViewer((state) => state.focusedUnitId)
+  const focusedUnit = useScene((s) => {
+    const unit = focusedUnitId ? s.nodes[focusedUnitId] : undefined
+    return unit?.type === 'unit' ? unit : null
+  })
   const hoveredId = useViewer((state) => state.hoveredId)
   const setSelection = useViewer((state) => state.setSelection)
   const setHoveredId = useViewer((state) => state.setHoveredId)
-  const setPhase = useEditor((state) => state.setPhase)
   const setMode = useEditor((state) => state.setMode)
   const unit = useViewer((state) => state.unit)
 
-  const isSelected = selectedZoneId === zone.id
+  const isSelected = useZoneSelected(zone.id)
+  const isRoom = zone.spaceRole === 'room'
   const isHovered = hoveredId === zone.id
 
   const itemRef = useRef<HTMLDivElement>(null)
@@ -1214,12 +1190,11 @@ const ZoneItem = memo(function ZoneItem({ zone, isLast }: { zone: ZoneNode; isLa
     }
   }, [isSelected])
 
-  const defaultName = `Zone (${formatAreaLabel(calculatePolygonArea(zone.polygon), unit)})`
+  const defaultName = `${zoneKindLabel(zone)} (${formatAreaLabel(calculatePolygonArea(zone.polygon), unit)})`
 
   const handleClick = () => {
-    setSelection({ zoneId: zone.id })
-    setPhase('structure')
     setMode('select')
+    selectZoneOrRoom(zone.id)
   }
 
   const handleDoubleClick = () => {
@@ -1228,6 +1203,8 @@ const ZoneItem = memo(function ZoneItem({ zone, isLast }: { zone: ZoneNode; isLa
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation()
+    // A room goes the way the room panel deletes it (its walls, or merged back).
+    if (isRoom) return requestRoomDeletion(zone.id)
     deleteNode(zone.id)
     if (isSelected) {
       setSelection({ zoneId: null })
@@ -1241,7 +1218,7 @@ const ZoneItem = memo(function ZoneItem({ zone, isLast }: { zone: ZoneNode; isLa
   return (
     <div
       className={cn(
-        'group/row relative flex h-8 cursor-pointer select-none items-center border-border/50 border-b px-3 text-sm transition-all duration-200',
+        'group/row relative flex h-8 cursor-pointer select-none items-center border-border/50 border-b text-sm transition-all duration-200',
         isSelected
           ? 'bg-accent/50 text-foreground'
           : isHovered
@@ -1253,6 +1230,7 @@ const ZoneItem = memo(function ZoneItem({ zone, isLast }: { zone: ZoneNode; isLa
       onMouseEnter={() => setHoveredId(zone.id)}
       onMouseLeave={() => setHoveredId(null)}
       ref={itemRef}
+      style={{ paddingLeft: depth * 12 + 28, paddingRight: 12 }}
     >
       {/* Vertical tree line */}
       <div
@@ -1260,14 +1238,21 @@ const ZoneItem = memo(function ZoneItem({ zone, isLast }: { zone: ZoneNode; isLa
           'pointer-events-none absolute w-px bg-border/50',
           isLast ? 'top-0 bottom-1/2' : 'top-0 bottom-0',
         )}
-        style={{ left: 8 }}
+        style={{ left: (depth - 1) * 12 + 20 }}
       />
       {/* Horizontal branch line */}
       <div
         className="pointer-events-none absolute top-1/2 h-px bg-border/50"
-        style={{ left: 8, width: 4 }}
+        style={{ left: (depth - 1) * 12 + 20, width: 4 }}
       />
 
+      {focusedUnit && (
+        <ZoneMembershipCheckbox
+          checked={focusedUnit.members.includes(zone.id)}
+          onToggle={() => toggleZoneMembership(focusedUnit.id, zone.id)}
+          unitName={focusedUnit.name || 'Unit'}
+        />
+      )}
       <span className={cn('mr-2', !isSelected && 'opacity-40')}>
         <ColorDot color={zone.color} onChange={handleColorChange} />
       </span>
@@ -1375,17 +1360,9 @@ const MultiSelectionBadge = memo(function MultiSelectionBadge() {
   )
 })
 
-const ContentSection = memo(function ContentSection() {
+const RoomsSection = memo(function RoomsSection() {
   const selectedLevelId = useViewer((state) => state.selection.levelId)
-  const structureLayer = useEditor((state) => state.structureLayer)
-  const phase = useEditor((state) => state.phase)
-  const setPhase = useEditor((state) => state.setPhase)
-  const setMode = useEditor((state) => state.setMode)
-  const setTool = useEditor((state) => state.setTool)
-
-  const level = useScene((s) =>
-    selectedLevelId ? ((s.nodes[selectedLevelId] as LevelNode | undefined) ?? null) : null,
-  )
+  const armToolMode = useEditor((state) => state.armToolMode)
   const levelZones = useScene(
     useShallow((s) => {
       if (!selectedLevelId) return []
@@ -1393,6 +1370,82 @@ const ContentSection = memo(function ContentSection() {
         (node): node is ZoneNode => node.type === 'zone' && node.parentId === selectedLevelId,
       )
     }),
+  )
+  const [expanded, setExpanded] = useState(true)
+
+  if (!selectedLevelId) return null
+
+  const handleDrawZone = (event: React.MouseEvent) => {
+    event.stopPropagation()
+    armToolMode({ mode: 'build', tool: 'zone' })
+  }
+
+  const rooms = levelZones.filter((zone) => zone.spaceRole === 'room')
+  const others = levelZones.filter((zone) => zone.spaceRole !== 'room')
+
+  return (
+    <div className="subtle-scrollbar max-h-72 shrink-0 overflow-y-auto overflow-x-hidden">
+      <TreeNodeWrapper
+        actions={
+          <button
+            className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
+            onClick={handleDrawZone}
+            title="Draw a zone"
+            type="button"
+          >
+            <Plus className="h-3 w-3" />
+          </button>
+        }
+        depth={1}
+        expanded={expanded}
+        hasChildren
+        icon={<LayoutGrid className="h-3.5 w-3.5" />}
+        label={
+          <span className="flex items-center gap-1.5">
+            Rooms
+            {rooms.length > 0 && (
+              <span className="text-muted-foreground text-xs">{rooms.length}</span>
+            )}
+          </span>
+        }
+        onClick={() => setExpanded((value) => !value)}
+        onToggle={() => setExpanded((value) => !value)}
+      >
+        {levelZones.length === 0 && (
+          <div className="border-border/50 border-b py-2 pr-3 pl-[52px] text-muted-foreground text-xs">
+            Close walls around a space to make a room.
+          </div>
+        )}
+        {rooms.map((zone, index) => (
+          <ZoneItem
+            depth={2}
+            isLast={others.length === 0 && index === rooms.length - 1}
+            key={zone.id}
+            zone={zone}
+          />
+        ))}
+        {others.length > 0 && (
+          <>
+            <div
+              className="pt-3 pb-1 pl-[52px] font-medium text-[11px] text-muted-foreground"
+              data-other-zones
+            >
+              Other zones
+            </div>
+            {others.map((zone, index) => (
+              <ZoneItem depth={2} isLast={index === others.length - 1} key={zone.id} zone={zone} />
+            ))}
+          </>
+        )}
+      </TreeNodeWrapper>
+    </div>
+  )
+})
+
+const ContentSection = memo(function ContentSection() {
+  const selectedLevelId = useViewer((state) => state.selection.levelId)
+  const level = useScene((s) =>
+    selectedLevelId ? ((s.nodes[selectedLevelId] as LevelNode | undefined) ?? null) : null,
   )
   const elementChildren = useScene(
     useShallow((s) => {
@@ -1405,6 +1458,7 @@ const ContentSection = memo(function ContentSection() {
       })
     }),
   )
+  const [expanded, setExpanded] = useState(true)
 
   if (!level) {
     return (
@@ -1412,49 +1466,40 @@ const ContentSection = memo(function ContentSection() {
     )
   }
 
-  if (structureLayer === 'zones') {
-    const handleAddZone = () => {
-      setPhase('structure')
-      setMode('build')
-      setTool('zone')
-    }
-
-    if (levelZones.length === 0) {
-      return (
-        <div className="px-3 py-4 text-muted-foreground text-sm">
-          No zones on this level.{' '}
-          <button className="cursor-pointer text-primary hover:underline" onClick={handleAddZone}>
-            Add one
-          </button>
-        </div>
-      )
-    }
-
-    return (
-      <div className="flex flex-col">
-        {levelZones.map((zone, index) => (
-          <ZoneItem isLast={index === levelZones.length - 1} key={zone.id} zone={zone} />
-        ))}
-      </div>
-    )
-  }
-
-  if (elementChildren.length === 0) {
-    return <div className="px-3 py-4 text-muted-foreground text-sm">No elements on this level</div>
-  }
   return (
-    <TreeNodeDragProvider>
-      <div className="flex flex-col">
-        {elementChildren.map((childId, index) => (
-          <TreeNode
-            depth={0}
-            isLast={index === elementChildren.length - 1}
-            key={childId}
-            nodeId={childId}
-          />
-        ))}
-      </div>
-    </TreeNodeDragProvider>
+    <TreeNodeWrapper
+      depth={1}
+      expanded={expanded}
+      hasChildren
+      icon={<Boxes className="h-3.5 w-3.5" />}
+      label={
+        <span className="flex items-center gap-1.5">
+          Elements
+          {elementChildren.length > 0 && (
+            <span className="text-muted-foreground text-xs">{elementChildren.length}</span>
+          )}
+        </span>
+      }
+      onClick={() => setExpanded((value) => !value)}
+      onToggle={() => setExpanded((value) => !value)}
+    >
+      {elementChildren.length === 0 ? (
+        <div className="border-border/50 border-b py-2 pr-3 pl-[52px] text-muted-foreground text-xs">
+          No elements on this level
+        </div>
+      ) : (
+        <TreeNodeDragProvider>
+          {elementChildren.map((childId, index) => (
+            <TreeNode
+              depth={2}
+              isLast={index === elementChildren.length - 1}
+              key={childId}
+              nodeId={childId}
+            />
+          ))}
+        </TreeNodeDragProvider>
+      )}
+    </TreeNodeWrapper>
   )
 })
 
@@ -1490,7 +1535,7 @@ const BuildingItem = memo(function BuildingItem({
   const handleSelect = () => {
     setSelection({ buildingId: building.id })
     if (phase === 'site') {
-      setPhase('structure')
+      setPhase('building')
     }
   }
 
@@ -1611,7 +1656,9 @@ const BuildingItem = memo(function BuildingItem({
                   onUploadAsset={onUploadAsset}
                   projectId={projectId}
                 />
-                <LayerToggle />
+                <UnitsSection buildingId={building.id} />
+                <RoomsSection />
+                <CollectionsSection />
               </div>
               <div className="subtle-scrollbar relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
                 <MultiSelectionBadge />
@@ -1667,7 +1714,14 @@ export function SitePanel({ projectId, onUploadAsset, onDeleteAsset }: SitePanel
                 : 'text-muted-foreground hover:bg-accent/30 hover:text-foreground',
             )}
             layout="position"
-            onClick={() => setPhase('site')}
+            onClick={() => {
+              setPhase('site')
+              // Also SELECT the site node so the registry inspector mounts the
+              // site kind's panel (address / parcel / setbacks / front edge).
+              // The site kind opts out of 3D click selection, so this header is
+              // its only selection entry point. (WS1)
+              setSelection({ selectedIds: [siteNode.id as AnyNodeId], zoneId: null })
+            }}
           >
             <div className="flex items-center gap-2">
               <img
@@ -1709,6 +1763,12 @@ export function SitePanel({ projectId, onUploadAsset, onDeleteAsset }: SitePanel
                 transition={{ type: 'spring', bounce: 0, duration: 0.4 }}
               >
                 <PropertyLineSection />
+                {/* Address → parcel, setbacks, front edge: the site kind's own
+                    panel (packages/nodes/src/site/panel.tsx), loaded through
+                    the registry so the editor does not import the nodes package. */}
+                <Suspense fallback={null}>
+                  <SiteKindPanel />
+                </Suspense>
               </motion.div>
             )}
           </AnimatePresence>
@@ -1722,7 +1782,7 @@ export function SitePanel({ projectId, onUploadAsset, onDeleteAsset }: SitePanel
             <div className="flex min-h-0 flex-1 flex-col">
               {buildings.map((building) => {
                 const isBuildingActive =
-                  (phase === 'structure' || phase === 'furnish') &&
+                  phase === 'building' &&
                   selectedBuildingId === building.id
 
                 return (

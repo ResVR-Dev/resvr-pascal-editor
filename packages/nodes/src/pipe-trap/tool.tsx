@@ -1,10 +1,18 @@
 'use client'
 
 import { emitter, type GridEvent, PipeTrapNode, useScene } from '@pascal-app/core'
-import { isGridSnapActive, triggerSFX, useEditor } from '@pascal-app/editor'
+import {
+  isGridSnapActive,
+  isMagneticSnapActive,
+  isTypingTarget,
+  triggerSFX,
+  useEditor,
+} from '@pascal-app/editor'
 import { useViewer } from '@pascal-app/viewer'
 import { Html } from '@react-three/drei'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { subscribeAccessorySnapping } from '../shared/accessory-snapping'
+import { alignDrawPoint, clearDrawAlignment } from '../shared/draw-alignment'
 import { LevelOffsetGroup } from '../shared/level-offset-group'
 import { pipeTrapDefinition } from './definition'
 import { buildPipeTrapGeometry } from './geometry'
@@ -25,20 +33,18 @@ function snap(value: number, step: number): number {
  */
 const PipeTrapTool = () => {
   const activeLevelId = useViewer((s) => s.selection.levelId)
+  const toolDefaults = useEditor((s) => s.toolDefaults['pipe-trap'])
   const [cursor, setCursor] = useState<[number, number, number] | null>(null)
   const [yaw, setYaw] = useState(0)
-  const [diameter] = useState(pipeTrapDefinition.defaults().diameter)
   const yawRef = useRef(0)
-  const diameterRef = useRef(diameter)
-  diameterRef.current = diameter
 
   const previewNode = useMemo(
     () =>
       PipeTrapNode.parse({
         ...pipeTrapDefinition.defaults(),
-        diameter,
+        ...toolDefaults,
       }),
-    [diameter],
+    [toolDefaults],
   )
   const ghost = useMemo(() => {
     const group = buildPipeTrapGeometry(previewNode)
@@ -58,16 +64,20 @@ const PipeTrapTool = () => {
     const resolve = (event: GridEvent) => {
       const step = isGridSnapActive() ? useEditor.getState().gridSnapStep : 0
       return {
-        position: [snap(event.localPosition[0], step), 0, snap(event.localPosition[2], step)] as [
-          number,
-          number,
-          number,
-        ],
-        diameter: diameterRef.current,
+        position: alignDrawPoint(
+          [snap(event.localPosition[0], step), 0, snap(event.localPosition[2], step)],
+          {
+            applySnap: isMagneticSnapActive(),
+            bypass: !isMagneticSnapActive(),
+          },
+        ),
+        diameter: previewNode.diameter,
       }
     }
 
+    let lastEvent: GridEvent | null = null
     const onMove = (event: GridEvent) => {
+      lastEvent = event
       setCursor(resolve(event).position)
     }
 
@@ -75,6 +85,7 @@ const PipeTrapTool = () => {
       const r = resolve(event)
       const trap = PipeTrapNode.parse({
         ...pipeTrapDefinition.defaults(),
+        ...toolDefaults,
         diameter: r.diameter,
         position: r.position,
         rotation: yawRef.current,
@@ -85,8 +96,7 @@ const PipeTrapTool = () => {
     }
 
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (isTypingTarget(e.target)) return
       const key = e.key
       if (key === 'r' || key === 'R' || key === 't' || key === 'T') {
         e.preventDefault()
@@ -98,15 +108,20 @@ const PipeTrapTool = () => {
       }
     }
 
+    const unsubscribeSnapping = subscribeAccessorySnapping(() => {
+      if (lastEvent) onMove(lastEvent)
+    })
     emitter.on('grid:move', onMove)
     emitter.on('grid:click', onClick)
     window.addEventListener('keydown', onKeyDown, true)
     return () => {
+      unsubscribeSnapping()
       emitter.off('grid:move', onMove)
       emitter.off('grid:click', onClick)
       window.removeEventListener('keydown', onKeyDown, true)
+      clearDrawAlignment()
     }
-  }, [activeLevelId])
+  }, [activeLevelId, previewNode.diameter, toolDefaults])
 
   if (!activeLevelId || !cursor) return null
 
@@ -122,7 +137,7 @@ const PipeTrapTool = () => {
         zIndexRange={[100, 0]}
       >
         <div className="flex items-center gap-2 whitespace-nowrap rounded-full border border-border/60 bg-background/90 px-4 py-1.5 text-xs tabular-nums shadow-sm backdrop-blur">
-          <span className="font-medium text-foreground">{diameter}" Trap</span>
+          <span className="font-medium text-foreground">{previewNode.diameter}" Trap</span>
           <span aria-hidden className="text-muted-foreground">
             ·
           </span>

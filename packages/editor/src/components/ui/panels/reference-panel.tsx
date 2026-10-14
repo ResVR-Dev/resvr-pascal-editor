@@ -25,6 +25,7 @@ import { guideEmitter } from '../../../lib/guide-events'
 import { getGuideImageName } from '../../../lib/local-guide-image'
 import { cn } from '../../../lib/utils'
 import useEditor from '../../../store/use-editor'
+import { isViewVisible, VIEW_2D } from '../../../store/view-layout'
 import { ActionButton, ActionGroup } from '../controls/action-button'
 import { PanelSection } from '../controls/panel-section'
 import { SliderControl } from '../controls/slider-control'
@@ -134,9 +135,7 @@ export function ReferencePanel() {
     // The scale line is drawn on the 2D plan — starting from a 3D-only view
     // would arm the flow invisibly inside the hidden floorplan panel.
     const editor = useEditor.getState()
-    if (editor.viewMode === '3d') {
-      editor.setViewMode('2d')
-    }
+    if (!isViewVisible(editor, VIEW_2D)) editor.showView(VIEW_2D)
 
     guideEmitter.emit('guide:set-reference-scale', { guideId: node.id })
   }, [node])
@@ -376,7 +375,7 @@ export function ReferencePanel() {
           precision={2}
           step={0.1}
           unit="m"
-          value={Math.round(node.position[0] * 100) / 100}
+          value={node.position[0]}
         />
         <SliderControl
           label={
@@ -394,7 +393,7 @@ export function ReferencePanel() {
           precision={2}
           step={0.1}
           unit="m"
-          value={Math.round(node.position[1] * 100) / 100}
+          value={node.position[1]}
         />
         <SliderControl
           label={
@@ -412,7 +411,7 @@ export function ReferencePanel() {
           precision={2}
           step={0.1}
           unit="m"
-          value={Math.round(node.position[2] * 100) / 100}
+          value={node.position[2]}
         />
       </PanelSection>
 

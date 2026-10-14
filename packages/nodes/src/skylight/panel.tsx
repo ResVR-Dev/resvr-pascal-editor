@@ -274,7 +274,7 @@ export default function SkylightPanel() {
                   'flex min-h-12 items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left text-xs transition-colors',
                   isSelected
                     ? 'border-orange-400/60 bg-orange-400/10 text-foreground'
-                    : 'border-border/50 bg-[#2C2C2E] text-muted-foreground hover:bg-[#3e3e3e] hover:text-foreground',
+                    : 'border-border/50 bg-black/4 dark:bg-[#2C2C2E] text-muted-foreground hover:bg-black/8 dark:hover:bg-[#3e3e3e] hover:text-foreground',
                 )}
                 key={skylightType}
                 onClick={() => handleTypeChange(skylightType)}
@@ -297,7 +297,7 @@ export default function SkylightPanel() {
           restoreOnCommit={false}
           step={0.001}
           unit="m"
-          value={Math.round((node.glassThickness ?? 0.01) * 1000) / 1000}
+          value={node.glassThickness ?? 0.01}
         />
         {activeSkylightType === 'lantern' && (
           <>
@@ -311,7 +311,7 @@ export default function SkylightPanel() {
               restoreOnCommit={false}
               step={0.01}
               unit="m"
-              value={Math.round((node.lanternHeight ?? 0.25) * 1000) / 1000}
+              value={node.lanternHeight ?? 0.25}
             />
             <SliderControl
               label="Top Scale"
@@ -382,7 +382,7 @@ export default function SkylightPanel() {
                 restoreOnCommit={false}
                 step={0.005}
                 unit="m"
-                value={Math.round((node.motorHousingSize ?? 0.08) * 1000) / 1000}
+                value={node.motorHousingSize ?? 0.08}
               />
             )}
           </>
@@ -419,7 +419,7 @@ export default function SkylightPanel() {
               restoreOnCommit={false}
               step={0.005}
               unit="m"
-              value={Math.round((node.trackWidth ?? 0.045) * 1000) / 1000}
+              value={node.trackWidth ?? 0.045}
             />
           </>
         )}
@@ -436,7 +436,7 @@ export default function SkylightPanel() {
           restoreOnCommit={false}
           step={0.05}
           unit="m"
-          value={Math.round(node.width * 100) / 100}
+          value={node.width}
         />
         <SliderControl
           label="Height"
@@ -448,7 +448,7 @@ export default function SkylightPanel() {
           restoreOnCommit={false}
           step={0.05}
           unit="m"
-          value={Math.round(node.height * 100) / 100}
+          value={node.height}
         />
       </PanelSection>
 
@@ -463,7 +463,7 @@ export default function SkylightPanel() {
           restoreOnCommit={false}
           step={0.005}
           unit="m"
-          value={Math.round((node.frameThickness ?? 0.05) * 1000) / 1000}
+          value={node.frameThickness ?? 0.05}
         />
         <SliderControl
           label="Depth"
@@ -475,7 +475,7 @@ export default function SkylightPanel() {
           restoreOnCommit={false}
           step={0.005}
           unit="m"
-          value={Math.round((node.frameDepth ?? 0.08) * 1000) / 1000}
+          value={node.frameDepth ?? 0.08}
         />
         <SliderControl
           label="Cutout Offset"
@@ -487,7 +487,7 @@ export default function SkylightPanel() {
           restoreOnCommit={false}
           step={0.005}
           unit="m"
-          value={Math.round((node.cutoutOffset ?? 0.01) * 1000) / 1000}
+          value={node.cutoutOffset ?? 0.01}
         />
       </PanelSection>
 
@@ -511,7 +511,7 @@ export default function SkylightPanel() {
             restoreOnCommit={false}
             step={0.005}
             unit="m"
-            value={Math.round((node.curbHeight ?? 0.1) * 1000) / 1000}
+            value={node.curbHeight ?? 0.1}
           />
         )}
       </PanelSection>
@@ -531,7 +531,7 @@ export default function SkylightPanel() {
           restoreOnCommit={false}
           step={0.05}
           unit="m"
-          value={Math.round(worldX_now * 100) / 100}
+          value={worldX_now}
         />
         <SliderControl
           label="Z"
@@ -547,7 +547,7 @@ export default function SkylightPanel() {
           restoreOnCommit={false}
           step={0.05}
           unit="m"
-          value={Math.round(worldZ_now * 100) / 100}
+          value={worldZ_now}
         />
         <SliderControl
           label="Rotation"
@@ -573,7 +573,7 @@ export default function SkylightPanel() {
         <ActionGroup>
           <ActionButton
             className="hover:bg-red-500/20"
-            icon={<Trash2 className="h-3.5 w-3.5 text-red-400" />}
+            icon={<Trash2 className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />}
             label="Delete"
             onClick={handleDelete}
           />

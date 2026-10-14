@@ -12,28 +12,37 @@ import {
   useSyncExternalStore,
 } from 'react'
 import useEditor from '../../../store/use-editor'
+import { isViewVisible } from '../../../store/view-layout'
+import { PluginsView } from '../../editor/views/plugins-view'
+import { PLUGINS_VIEW_ID } from '../../editor/views/use-editor-views'
 import {
   editorHostPanelRegistry,
   type EditorHostPanel,
   managedPluginIds,
   showsPluginManager,
 } from '../../../lib/plugin-panels'
+import { IconRefImage } from '../icon-ref'
 import { ErrorBoundary } from '../primitives/error-boundary'
 import type { ExtraPanel } from './icon-rail'
-import { PluginsPanel } from './panels/plugins-panel'
 
+// The rail's "+" puts the plugin directory on the stage, as a view in the
+// focused pane, and stays lit while it is there instead of leaving an
+// unrelated panel open beside it. `component` serves the v1 sidebar.
 const pluginsManagerPanel: ExtraPanel = {
   id: 'plugins',
   label: 'Plugins',
-  icon: <Plus className="h-5 w-5" />,
-  component: PluginsPanel,
+  icon: <img alt="" className="size-8 object-contain" src="/icons/plugins.webp" />,
+  component: PluginsView,
+  noPanel: true,
+  onSelect: () => useEditor.getState().showView(PLUGINS_VIEW_ID),
+  onDeselect: () => useEditor.getState().closeView(PLUGINS_VIEW_ID),
 }
 
 /** Resolve a plugin's {@link IconRef} into a rail-sized React node. Mirrors the
  * inspector's `renderIcon`, sized for the 24px icon-rail button. */
 function renderIconRef(ref: IconRef): ReactNode {
   if (ref.kind === 'url') {
-    return <img alt="" className="h-5 w-5 object-contain" src={ref.src} />
+    return <IconRefImage className="h-5 w-5" src={ref.src} />
   }
   if (ref.kind === 'iconify') {
     return <Icon height={20} icon={ref.name} width={20} />
@@ -106,6 +115,7 @@ export function useHostPanels(hostPanels?: ExtraPanel[]): ExtraPanel[] {
   const workspaceMode = useEditor((s) => s.workspaceMode)
   const installedPlugins = useScene((s) => s.installedPlugins)
   const readOnly = useScene((s) => s.readOnly)
+  const pluginsViewShown = useEditor((s) => isViewVisible(s, PLUGINS_VIEW_ID))
   const hostIds = new Set(hostPanels?.map((p) => p.id))
 
   useEffect(() => {
@@ -141,7 +151,7 @@ export function useHostPanels(hostPanels?: ExtraPanel[]): ExtraPanel[] {
       readOnly,
       workspaceMode,
     })
-      ? [pluginsManagerPanel]
+      ? [{ ...pluginsManagerPanel, stageActive: pluginsViewShown }]
       : []
   return [...(hostPanels ?? []), ...fromRegistry, ...manager]
 }

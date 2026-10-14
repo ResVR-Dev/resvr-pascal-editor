@@ -1,8 +1,9 @@
-import { type BuildingNode, DEFAULT_LEVEL_HEIGHT, LevelNode, useScene } from '@pascal-app/core'
+import { type BuildingNode, useScene } from '@pascal-app/core'
 import { useViewer } from '@pascal-app/viewer'
 import { Building2, Plus } from 'lucide-react'
 import { memo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
+import { addStoreyOnTop } from './../../../../../lib/add-storey'
 import {
   Tooltip,
   TooltipContent,
@@ -23,11 +24,17 @@ export const BuildingTreeNode = memo(function BuildingTreeNode({
   isLast,
 }: BuildingTreeNodeProps) {
   const [expanded, setExpanded] = useState(true)
-  const createNode = useScene((state) => state.createNode)
   const isVisible = useScene((s) => s.nodes[nodeId]?.visible !== false)
   const name = useScene((s) => s.nodes[nodeId]?.name)
+  // Levels and elevators first, units after, so the units read as one group.
   const children = useScene(
-    useShallow((s) => (s.nodes[nodeId] as BuildingNode | undefined)?.children ?? []),
+    useShallow((s) => {
+      const ids = (s.nodes[nodeId] as BuildingNode | undefined)?.children ?? []
+      return [
+        ...ids.filter((id) => s.nodes[id]?.type !== 'unit'),
+        ...ids.filter((id) => s.nodes[id]?.type === 'unit'),
+      ]
+    }),
   )
   const isSelected = useViewer((state) => state.selection.buildingId === nodeId)
   const isHovered = useViewer((state) => state.hoveredId === nodeId)
@@ -39,15 +46,7 @@ export const BuildingTreeNode = memo(function BuildingTreeNode({
 
   const handleAddLevel = (e: React.MouseEvent) => {
     e.stopPropagation()
-    const nodes = useScene.getState().nodes
-    const levelCount = children.filter((childId) => nodes[childId]?.type === 'level').length
-    const newLevel = LevelNode.parse({
-      level: levelCount,
-      height: DEFAULT_LEVEL_HEIGHT,
-      children: [],
-      parentId: nodeId,
-    })
-    createNode(newLevel, nodeId)
+    addStoreyOnTop(nodeId)
   }
 
   return (

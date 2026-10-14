@@ -1,9 +1,20 @@
+import type { NodeDeletionPlan, NodeDeletionScene } from '@pascal-app/core'
 import type { SceneGraph } from '@pascal-app/core/clone-scene-graph'
-import type { AnyNode, AnyNodeId, AnyNodeType } from '@pascal-app/core/schema'
+import type {
+  AnyNode,
+  AnyNodeId,
+  AnyNodeType,
+  Collection,
+  CollectionId,
+  SceneMaterial,
+  SceneMaterialId,
+} from '@pascal-app/core/schema'
+import type { AgentSession } from '../bridge/agent-session'
 import type { ActiveSceneMeta, Patch, SceneBridge, ValidationResult } from '../bridge/scene-bridge'
 import type {
   ProjectCreateOptions,
   ProjectStatus,
+  SceneDeleteResult,
   SceneEvent,
   SceneEventAppendOptions,
   SceneEventListOptions,
@@ -29,6 +40,13 @@ export interface SceneOperations {
   readonly canCreateProject: boolean
   readonly canGetProjectStatus: boolean
   readonly storeBackend: SceneStore['backend'] | null
+  /** What the agent's session has kept (named moments, what it made); absent on a host with none. */
+  readonly agentSession?: AgentSession
+  /**
+   * Whether `applyPatch` takes `upsert_material` patches with the nodes that use them, in one
+   * history step. A host that does lends `getMaterials`, and paint keeps native materials there.
+   */
+  readonly supportsMaterialUpserts?: boolean
 
   setActiveScene(meta: ActiveSceneMeta): void
   getActiveScene(): ActiveSceneMeta | null
@@ -40,6 +58,10 @@ export interface SceneOperations {
   loadJSON(json: string | SceneGraph): void
   getNode(id: AnyNodeId): AnyNode | null
   getNodes(): Record<AnyNodeId, AnyNode>
+  getCollections(): Record<CollectionId, Collection>
+  getMaterials?(): Readonly<Record<SceneMaterialId, SceneMaterial>>
+  /** Replace the scene's collections (one undo step, like any edit). */
+  setCollections(collections: Record<CollectionId, Collection>): void
   getRootNodeIds(): AnyNodeId[]
   getChildren(parentId: AnyNodeId): AnyNode[]
   getAncestry(id: AnyNodeId): AnyNode[]
@@ -57,19 +79,26 @@ export interface SceneOperations {
     deletedIds: AnyNodeId[]
     createdIds: AnyNodeId[]
   }
+  /**
+   * The active bridge's deletion preview, when it has one. Absent for bridges
+   * that cannot preview their own deletes; the apply_patch guard is then stricter.
+   */
+  readonly planDeletion?: (scene: NodeDeletionScene, ids: AnyNodeId[]) => NodeDeletionPlan
+  deriveStructure(levelIds?: AnyNodeId[]): { createdIds: AnyNodeId[]; deletedIds: AnyNodeId[] }
   undo(steps?: number): number
   redo(steps?: number): number
   validateScene(): ValidationResult
   flushDirty(): string[]
   getHistory(): { pastCount: number; futureCount: number }
   clearHistory(): void
+  runAsSingleHistoryStep<T>(run: () => T): T
 
   createProject(options: ProjectCreateOptions): Promise<ProjectStatus>
   getProjectStatus(id: string): Promise<ProjectStatus | null>
   saveScene(options: SceneSaveOptions): Promise<SceneMeta>
   loadStoredScene(id: string): Promise<SceneWithGraph | null>
   listScenes(options?: SceneListOptions): Promise<SceneMeta[]>
-  deleteStoredScene(id: string, options?: SceneMutateOptions): Promise<boolean>
+  deleteStoredScene(id: string, options?: SceneMutateOptions): Promise<SceneDeleteResult>
   renameStoredScene(id: string, newName: string, options?: SceneMutateOptions): Promise<SceneMeta>
   appendSceneEvent(options: SceneEventAppendOptions): Promise<SceneEvent | null>
   listSceneEvents(id: string, options?: SceneEventListOptions): Promise<SceneEvent[]>
@@ -83,13 +112,29 @@ class SceneOperationsFacade implements SceneOperations {
   readonly #bridge?: SceneBridge
   readonly #store?: SceneStore
 
+  readonly planDeletion?: (scene: NodeDeletionScene, ids: AnyNodeId[]) => NodeDeletionPlan
+
   constructor(options: CreateSceneOperationsOptions) {
     this.#bridge = options.bridge
     this.#store = options.store
+    const bridge = options.bridge as
+      | { planDeletion?: (scene: NodeDeletionScene, ids: AnyNodeId[]) => NodeDeletionPlan }
+      | undefined
+    if (typeof bridge?.planDeletion === 'function') {
+      this.planDeletion = (scene, ids) => bridge.planDeletion!(scene, ids)
+    }
   }
 
   get hasBridge(): boolean {
     return this.#bridge !== undefined
+  }
+
+  get supportsMaterialUpserts(): boolean {
+    return this.#bridge?.supportsMaterialUpserts === true
+  }
+
+  get agentSession(): AgentSession | undefined {
+    return (this.#bridge as { agentSession?: AgentSession } | undefined)?.agentSession
   }
 
   get hasStore(): boolean {
@@ -156,7 +201,9 @@ class SceneOperationsFacade implements SceneOperations {
   }
 
   loadJSON(json: string | SceneGraph): void {
-    this.requireBridge().loadJSON(json)
+    const bridge = this.requireBridge()
+    bridge.loadJSON(json)
+    bridge.clearHistory()
   }
 
   getNode(id: AnyNodeId): AnyNode | null {
@@ -165,6 +212,18 @@ class SceneOperationsFacade implements SceneOperations {
 
   getNodes(): Record<AnyNodeId, AnyNode> {
     return this.requireBridge().getNodes()
+  }
+
+  getCollections(): Record<CollectionId, Collection> {
+    return this.requireBridge().getCollections()
+  }
+
+  getMaterials(): Readonly<Record<SceneMaterialId, SceneMaterial>> {
+    return this.requireBridge().getMaterials()
+  }
+
+  setCollections(collections: Record<CollectionId, Collection>): void {
+    this.requireBridge().setCollections(collections)
   }
 
   getRootNodeIds(): AnyNodeId[] {
@@ -208,7 +267,18 @@ class SceneOperationsFacade implements SceneOperations {
     deletedIds: AnyNodeId[]
     createdIds: AnyNodeId[]
   } {
+    if (patches.some((patch) => patch.op === 'upsert_material') && !this.supportsMaterialUpserts)
+      throw new Error('materials_unavailable')
     return this.requireBridge().applyPatch(patches)
+  }
+
+  /**
+   * Derive construction from the intent the tools just wrote. The hosted
+   * bridge reconciles inside every mutation and exposes no hook, so the call
+   * is optional: there it is already done by the time a tool builds its result.
+   */
+  deriveStructure(levelIds?: AnyNodeId[]): { createdIds: AnyNodeId[]; deletedIds: AnyNodeId[] } {
+    return this.requireBridge().deriveStructure?.(levelIds) ?? { createdIds: [], deletedIds: [] }
   }
 
   undo(steps?: number): number {
@@ -233,6 +303,10 @@ class SceneOperationsFacade implements SceneOperations {
 
   clearHistory(): void {
     this.requireBridge().clearHistory()
+  }
+
+  runAsSingleHistoryStep<T>(run: () => T): T {
+    return this.requireBridge().runAsSingleHistoryStep(run)
   }
 
   async createProject(options: ProjectCreateOptions): Promise<ProjectStatus> {
@@ -285,7 +359,7 @@ class SceneOperationsFacade implements SceneOperations {
     return this.requireStore().list(options)
   }
 
-  async deleteStoredScene(id: string, options?: SceneMutateOptions): Promise<boolean> {
+  async deleteStoredScene(id: string, options?: SceneMutateOptions): Promise<SceneDeleteResult> {
     return this.requireStore().delete(id, options)
   }
 

@@ -1,7 +1,6 @@
 'use client'
 
-import type { AnyNodeId } from '@pascal-app/core'
-import { DEFAULT_LEVEL_HEIGHT, LevelNode, useScene } from '@pascal-app/core'
+import { type AnyNodeId, type LevelNode, type UnitNode, useScene } from '@pascal-app/core'
 import { useViewer } from '@pascal-app/viewer'
 import {
   AppWindow,
@@ -15,6 +14,7 @@ import {
   EyeOff,
   FileJson,
   Grid3X3,
+  Group,
   Hexagon,
   Layers,
   Map,
@@ -30,15 +30,17 @@ import {
   Redo2,
   Sparkles,
   Square,
-  SquareStack,
   Sun,
   Trash2,
   Undo2,
   Video,
 } from 'lucide-react'
 import { useEffect } from 'react'
+import { addStoreyOnTop } from '../../../lib/add-storey'
 import { getHistoryCommandState, runRedo, runUndo } from '../../../lib/history'
 import { deleteLevelWithFallbackSelection } from '../../../lib/level-selection'
+import { getSavedSceneDocument } from '../../../lib/scene'
+import { createUnitInBuilding, enterUnitFocus, leaveUnitFocus } from '../../../lib/units'
 import { useCommandRegistry } from '../../../store/use-command-registry'
 import type { StructureTool } from '../../../store/use-editor'
 import useEditor from '../../../store/use-editor'
@@ -48,29 +50,34 @@ export function EditorCommands() {
   const register = useCommandRegistry((s) => s.register)
   const { navigateTo, setInputValue, setOpen } = useCommandPalette()
 
-  const setPhase = useEditor((s) => s.setPhase)
   const armToolMode = useEditor((s) => s.armToolMode)
   const armMaterialPaint = useEditor((s) => s.armMaterialPaint)
-  const setStructureLayer = useEditor((s) => s.setStructureLayer)
   const isPreviewMode = useEditor((s) => s.isPreviewMode)
   const setPreviewMode = useEditor((s) => s.setPreviewMode)
 
   const exportScene = useViewer((s) => s.exportScene)
+  // Focusable units are listed one command each; the key changes only when a
+  // unit is added, removed or renamed.
+  const unitListKey = useScene((s) =>
+    Object.values(s.nodes)
+      .filter((n): n is UnitNode => n.type === 'unit')
+      .map((n) => `${n.id}:${n.name ?? ''}`)
+      .join('|'),
+  )
 
   // Re-register when exportScene availability changes (it's a conditional action)
   useEffect(() => {
+    void unitListKey
     const run = (fn: () => void) => {
       fn()
       setOpen(false)
     }
+    const focusableUnits = Object.values(useScene.getState().nodes).filter(
+      (n): n is UnitNode => n.type === 'unit',
+    )
 
     const activateTool = (tool: StructureTool) => {
-      run(() => {
-        setPhase('structure')
-        if (tool === 'zone') setStructureLayer('zones')
-        else setStructureLayer('elements')
-        armToolMode({ mode: 'build', tool })
-      })
+      run(() => armToolMode({ mode: 'build', tool }))
     }
 
     return register([
@@ -161,11 +168,7 @@ export function EditorCommands() {
         keywords: ['paint', 'material', 'texture', 'bucket', 'surface'],
         shortcut: ['P'],
         execute: () =>
-          run(() => {
-            setPhase('structure')
-            setStructureLayer('elements')
-            armMaterialPaint()
-          }),
+          run(() => armMaterialPaint()),
       },
       {
         id: 'editor.mode.terrain-sculpt',
@@ -200,16 +203,7 @@ export function EditorCommands() {
             const { nodes } = useScene.getState()
             const building = Object.values(nodes).find((n) => n.type === 'building')
             if (!building) return
-            const levelCount = building.children.filter(
-              (childId) => nodes[childId as keyof typeof nodes]?.type === 'level',
-            ).length
-            const newLevel = LevelNode.parse({
-              level: levelCount,
-              height: DEFAULT_LEVEL_HEIGHT,
-              children: [],
-              parentId: building.id,
-            })
-            useScene.getState().createNode(newLevel, building.id)
+            const newLevel = addStoreyOnTop(building.id)
             useViewer.getState().setSelection({ levelId: newLevel.id })
           }),
       },
@@ -249,6 +243,44 @@ export function EditorCommands() {
           }),
       },
 
+      // ── Units ────────────────────────────────────────────────────────────
+      {
+        id: 'editor.unit.new',
+        label: 'New unit',
+        group: 'Units',
+        icon: <Group className="h-4 w-4" />,
+        keywords: ['unit', 'apartment', 'hotel', 'room', 'add', 'create', 'new'],
+        when: () => Object.values(useScene.getState().nodes).some((n) => n.type === 'building'),
+        execute: () =>
+          run(() => {
+            const { nodes } = useScene.getState()
+            const selectedBuildingId = useViewer.getState().selection.buildingId
+            const building =
+              (selectedBuildingId ? nodes[selectedBuildingId] : undefined) ??
+              Object.values(nodes).find((n) => n.type === 'building')
+            if (building?.type !== 'building') return
+            createUnitInBuilding(building.id)
+          }),
+      },
+      ...focusableUnits.map((unit) => ({
+        id: `editor.unit.focus.${unit.id}`,
+        label: `Focus unit: ${unit.name || 'Unit'}`,
+        group: 'Units',
+        icon: <Group className="h-4 w-4" />,
+        keywords: ['unit', 'focus', 'apartment', unit.name || 'Unit'],
+        when: () => useViewer.getState().focusedUnitId !== unit.id,
+        execute: () => run(() => enterUnitFocus(unit.id)),
+      })),
+      {
+        id: 'editor.unit.exit-focus',
+        label: 'Exit unit focus',
+        group: 'Units',
+        icon: <Group className="h-4 w-4" />,
+        keywords: ['unit', 'focus', 'exit', 'leave', 'apartment'],
+        when: () => !!useViewer.getState().focusedUnitId,
+        execute: () => run(() => leaveUnitFocus()),
+      },
+
       // ── Viewer Controls ──────────────────────────────────────────────────
       {
         id: 'editor.viewer.wall-mode',
@@ -262,19 +294,6 @@ export function EditorCommands() {
         },
         navigate: true,
         execute: () => navigateTo('wall-mode'),
-      },
-      {
-        id: 'editor.viewer.level-mode',
-        label: 'Level Mode',
-        group: 'Viewer Controls',
-        icon: <SquareStack className="h-4 w-4" />,
-        keywords: ['level', 'floor', 'exploded', 'stacked', 'solo'],
-        badge: () => {
-          const mode = useViewer.getState().levelMode
-          return { manual: 'Manual', stacked: 'Stacked', exploded: 'Exploded', solo: 'Solo' }[mode]
-        },
-        navigate: true,
-        execute: () => navigateTo('level-mode'),
       },
       {
         id: 'editor.viewer.camera-mode',
@@ -370,7 +389,7 @@ export function EditorCommands() {
         keywords: ['export', 'download', 'json', 'save', 'data'],
         execute: () =>
           run(() => {
-            const { nodes, rootNodeIds } = useScene.getState()
+            const { nodes, rootNodeIds } = getSavedSceneDocument()
             const blob = new Blob([JSON.stringify({ nodes, rootNodeIds }, null, 2)], {
               type: 'application/json',
             })
@@ -424,13 +443,12 @@ export function EditorCommands() {
     navigateTo,
     setInputValue,
     setOpen,
-    setPhase,
     armToolMode,
     armMaterialPaint,
-    setStructureLayer,
     isPreviewMode,
     setPreviewMode,
     exportScene,
+    unitListKey,
   ])
 
   return null

@@ -1,6 +1,6 @@
 'use client'
 
-import { emitter } from '@pascal-app/core'
+import { emitter, type SnapshotSavedEvent } from '@pascal-app/core'
 import { SNAPSHOT_MAX_EDGE } from '@pascal-app/viewer'
 import {
   Check,
@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useIsMobile } from '../../hooks/use-mobile'
 import { triggerSFX } from '../../lib/sfx-bus'
+import { isTypingTarget } from '../../lib/typing-target'
 import { requestWalkthroughPointerLock } from '../../lib/walkthrough-pointer-lock'
 import useEditor, {
   CAPTURE_FOV_MAX,
@@ -29,6 +30,8 @@ import useEditor, {
 import { useFirstPersonHud } from '../../store/use-first-person-hud'
 import { Slider } from '../ui/slider'
 import { WalkthroughCrosshair } from '../walkthrough-hud'
+import { CaptureLevelPicker } from './capture-level-picker'
+import { isOverlaySnapshotSave } from './snapshot-capture'
 
 // Local alias — distinct from `useEditor.captureMode` (which describes *why*
 // a capture is happening, e.g. `preset`). This one says HOW the captured
@@ -158,6 +161,7 @@ const CAMERA_NAV_HINTS: Record<CaptureCameraNav, readonly CameraNavHint[] | null
     { keys: ['Space', 'E'], action: 'up' },
     { keys: ['Q'], action: 'down' },
     { keys: ['Shift'], action: 'boost' },
+    { keys: ['Alt'], action: 'slow' },
     { keys: ['Wheel'], action: 'lens' },
     { keys: ['P', 'Esc'], action: 'free cursor' },
     { keys: ['Click', 'Enter'], action: 'shoot' },
@@ -263,24 +267,31 @@ export function SnapshotCaptureOverlay({ projectId }: { projectId: string }) {
 
   // Listen for snapshot saved to show feedback then exit
   useEffect(() => {
-    const handler = () => {
+    if (!isCaptureMode) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const handler = (event: SnapshotSavedEvent | undefined) => {
+      if (!isOverlaySnapshotSave(event, projectId)) return
       setCaptureState('saved')
-      setTimeout(() => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
         setCaptureMode(false)
         setCaptureState('idle')
       }, 1500)
     }
     emitter.on('snapshot:saved', handler)
-    return () => emitter.off('snapshot:saved', handler)
-  }, [setCaptureMode])
+    return () => {
+      emitter.off('snapshot:saved', handler)
+      clearTimeout(timer)
+    }
+  }, [isCaptureMode, projectId, setCaptureMode])
 
   // From the shutter firing until the saved toast clears, walk / drone hold
   // still: a late WASD tap or mouse twitch must not shift the frame out from
   // under the shot the user just took.
   useEffect(() => {
-    useEditor.getState().setCaptureShutterHold(captureState !== 'idle')
+    useEditor.getState().setCaptureShutterHold(isCaptureMode && captureState !== 'idle')
     return () => useEditor.getState().setCaptureShutterHold(false)
-  }, [captureState])
+  }, [captureState, isCaptureMode])
 
   const dismiss = useCallback(() => setCaptureMode(false), [setCaptureMode])
 
@@ -457,7 +468,7 @@ export function SnapshotCaptureOverlay({ projectId }: { projectId: string }) {
         return
       }
       if (e.key !== 'Enter') return
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (isTypingTarget(e.target)) return
       e.preventDefault()
       handleCapture()
     }
@@ -556,7 +567,7 @@ export function SnapshotCaptureOverlay({ projectId }: { projectId: string }) {
   const captureDisabled = captureState !== 'idle' || (mode === 'area' && !hasSelection)
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-40" ref={overlayRef}>
+    <div className="dark pointer-events-none absolute inset-0 z-40" ref={overlayRef}>
       {/* Walk / drone keep the walkthrough's centered pointer (the ring means
           E opens the door / window under it) — the capture overlay replaces
           the walkthrough HUD, so the crosshair rides along here. */}
@@ -700,6 +711,9 @@ export function SnapshotCaptureOverlay({ projectId }: { projectId: string }) {
           </div>
         </div>
       )}
+
+      {/* Top-left: which levels the shot shows (the whole building by default). */}
+      {!isPreset && <CaptureLevelPicker />}
 
       {/* Top-right dismiss button (icon-only on mobile) */}
       <div className="pointer-events-auto absolute top-4 right-4">

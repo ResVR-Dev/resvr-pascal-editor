@@ -9,7 +9,12 @@ import {
   SHADOW_ONLY_LAYER,
   setSurfaceRaycastLayers,
 } from './layers'
-import { hideFromScene, showInScene } from './scene-visibility'
+import {
+  hideFromScene,
+  showInScene,
+  temporarilyShowPresentation,
+  temporarilyShowShadowOnly,
+} from './scene-visibility'
 
 function sceneObject(): THREE.Object3D {
   const obj = new THREE.Object3D()
@@ -18,6 +23,62 @@ function sceneObject(): THREE.Object3D {
 }
 
 describe('scene visibility', () => {
+  test('shot capture restores solo geometry without admitting overlays, isolation, or batched sources', () => {
+    const root = new THREE.Group()
+    const geometry = sceneObject()
+    const overlay = new THREE.Object3D()
+    overlay.layers.set(1)
+    const isolated = sceneObject()
+    const batched = sceneObject()
+    root.add(geometry, overlay, isolated, batched)
+    for (const obj of root.children) hideFromScene(obj, 'shadow-only')
+    hideFromScene(isolated, 'isolated')
+    hideFromScene(batched, 'batched')
+    const original = root.children.map((obj) => obj.layers.mask)
+    const captureLayers = new THREE.Layers()
+
+    const restore = temporarilyShowShadowOnly(root)
+    expect(geometry.layers.test(captureLayers)).toBe(true)
+    expect(overlay.layers.test(captureLayers)).toBe(false)
+    expect(overlay.layers.mask).toBe(1 << 1)
+    expect(isolated.layers.test(captureLayers)).toBe(false)
+    expect(batched.layers.test(captureLayers)).toBe(false)
+    expect(batched.layers.isEnabled(BATCHED_LAYER)).toBe(true)
+    restore()
+
+    expect(root.children.map((obj) => obj.layers.mask)).toEqual(original)
+    showInScene(geometry, 'shadow-only')
+    expect(geometry.layers.isEnabled(SCENE_LAYER)).toBe(true)
+    showInScene(isolated, 'shadow-only')
+    expect(isolated.layers.isEnabled(SCENE_LAYER)).toBe(false)
+  })
+
+  test('an interior capture shows the isolated and soloed parts of its floor, never batched sources', () => {
+    const root = new THREE.Group()
+    const isolated = sceneObject()
+    const soloed = sceneObject()
+    const batched = sceneObject()
+    const elsewhere = sceneObject()
+    root.add(isolated, soloed, batched)
+    hideFromScene(isolated, 'isolated')
+    hideFromScene(soloed, 'shadow-only')
+    hideFromScene(batched, 'isolated')
+    hideFromScene(batched, 'wall-batched')
+    hideFromScene(elsewhere, 'isolated')
+    const original = [isolated, soloed, batched, elsewhere].map((obj) => obj.layers.mask)
+    const captureLayers = new THREE.Layers()
+
+    const restore = temporarilyShowPresentation(root)
+    expect(isolated.layers.test(captureLayers)).toBe(true)
+    expect(soloed.layers.test(captureLayers)).toBe(true)
+    expect(batched.layers.test(captureLayers)).toBe(false)
+    expect(batched.layers.isEnabled(BATCHED_LAYER)).toBe(true)
+    expect(elsewhere.layers.test(captureLayers)).toBe(false)
+    restore()
+
+    expect([isolated, soloed, batched, elsewhere].map((obj) => obj.layers.mask)).toEqual(original)
+  })
+
   test('one reason hides and gives the exact mask back', () => {
     const obj = sceneObject()
     obj.layers.enable(OVERLAY_LAYER)

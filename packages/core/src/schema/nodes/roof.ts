@@ -1,5 +1,6 @@
 import dedent from 'dedent'
 import { z } from 'zod'
+import { Assembly } from '../assembly'
 import { BaseNode, nodeType, objectId } from '../base'
 import type { MaterialSchema as MaterialSchemaType } from '../material'
 import { MaterialSchema } from '../material'
@@ -14,6 +15,7 @@ export type RoofSurfaceMaterialSpec = {
 export const RoofSupport = z
   .discriminatedUnion('kind', [
     z.object({ kind: z.literal('level') }),
+    z.object({ kind: z.literal('walls') }),
     z.object({
       kind: z.literal('roof'),
       roofSegmentId: RoofSegmentNode.shape.id,
@@ -40,6 +42,11 @@ export const RoofNode = BaseNode.extend({
   // Rotation around Y axis in radians
   rotation: z.number().default(0),
   support: RoofSupport,
+  // Layer build-up inward from the covering-top plane of every segment (F2).
+  assembly: Assembly.optional(),
+  // Per-slot material overrides, as on walls and slabs: `layer:<id>` keys
+  // (or a layer's own `slot`) paint an assembly layer.
+  slots: z.record(z.string(), z.string()).optional(),
   // Child roof segment IDs
   children: z.array(RoofSegmentNode.shape.id).default([]),
 }).describe(
@@ -49,7 +56,7 @@ export const RoofNode = BaseNode.extend({
   When not being edited, segments are visually combined into a single solid.
   - position: center position of the roof group
   - rotation: rotation around Y axis
-  - support: level placement or an explicit roof-surface attachment
+  - support: custom level placement, spatial wall-top following, or a roof-surface attachment
   - children: array of RoofSegmentNode IDs
   `,
 )

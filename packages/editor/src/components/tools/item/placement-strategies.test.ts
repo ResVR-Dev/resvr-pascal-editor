@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   BlockNode,
+  type CeilingEvent,
+  type CeilingNode,
+  type GridEvent,
   ItemNode,
   type LevelNode,
   type NodeEvent,
@@ -9,7 +12,12 @@ import {
   type WallNode,
 } from '@pascal-app/core'
 import { BufferGeometry, Mesh, MeshBasicMaterial, type Object3D, Vector3 } from 'three'
-import { faceHostStrategy, wallStrategy } from './placement-strategies'
+import {
+  ceilingStrategy,
+  faceHostStrategy,
+  floorStrategy,
+  wallStrategy,
+} from './placement-strategies'
 import type { PlacementContext, SpatialValidators } from './placement-types'
 import { registerTestBlockFaceHost } from './test-face-host'
 
@@ -453,5 +461,79 @@ describe('wallStrategy.move', () => {
 
     expect(result.gridPosition[1]).toBeCloseTo(0.05, 6)
     expect(result.cursorPosition[1]).toBeCloseTo(0.4 + 0.05, 6)
+  })
+})
+
+describe('floorStrategy.move', () => {
+  function makeGridEvent(x: number, y: number, z: number): GridEvent {
+    return {
+      position: [x, y, z],
+      localPosition: [x, y, z],
+      nativeEvent: {} as GridEvent['nativeEvent'],
+    }
+  }
+
+  test('follows the live grid Y so a raised placement keeps its height', () => {
+    const context = floorItemContext()
+    context.gridPosition.set(0, 0.9, 0)
+
+    const result = floorStrategy.move(context, makeGridEvent(1.25, 0.9, 2.25))
+    if (!result) throw new Error('expected a placement result')
+
+    expect(result.gridPosition[1]).toBe(0.9)
+    expect(result.cursorPosition[1]).toBe(0.9)
+  })
+
+  // `detachItemSurfaceToFloor` zeroes the grid Y when an item is taken off a
+  // host; the floor path must honour that instead of a Y frozen at drag start,
+  // or the item commits floating at the shelf's height.
+  test('drops to the level plane once un-hosting zeroes the grid Y', () => {
+    const context = floorItemContext()
+    context.gridPosition.set(0, 0, 0)
+
+    const result = floorStrategy.move(context, makeGridEvent(1.25, 0.9, 2.25))
+    if (!result) throw new Error('expected a placement result')
+
+    expect(result.gridPosition[1]).toBe(0)
+    expect(result.cursorPosition[1]).toBe(0)
+    expect(result.nodeUpdate?.position?.[1]).toBe(0)
+  })
+})
+
+describe('ceilingStrategy.move', () => {
+  const ceiling = { id: 'ceiling_test', type: 'ceiling' } as unknown as CeilingNode
+  const ceilingEvent = (): CeilingEvent =>
+    ({
+      node: ceiling,
+      position: [1, 2.5, 1],
+      localPosition: [1, 0, 1],
+      object: new Mesh(),
+      stopPropagation: () => {},
+    }) as unknown as CeilingEvent
+  const onCeiling = (draftItem: ItemNode): PlacementContext => ({
+    ...ceilingContext(),
+    asset: draftItem.asset,
+    draftItem,
+    state: { ...ceilingContext().state, surface: 'ceiling', ceilingId: ceiling.id },
+  })
+  const hanging = (source?: unknown) =>
+    ({
+      ...makeDraft(),
+      asset: { ...makeDraft().asset, attachTo: 'ceiling', dimensions: [0.9, 1, 0.6] },
+      ...(source ? { source } : {}),
+    }) as unknown as ItemNode
+
+  test('hangs a catalog model its full height below the ceiling', () => {
+    const result = ceilingStrategy.move(onCeiling(hanging()), ceilingEvent())
+    expect(result?.gridPosition[1]).toBeCloseTo(-1, 6)
+  })
+
+  test('hangs a scripted object from its top, where the compiler put its origin', () => {
+    const source = {
+      kind: 'script',
+      manifest: { bounds: { min: [-0.45, -1, -0.3], max: [0.45, 0, 0.3] } },
+    }
+    const result = ceilingStrategy.move(onCeiling(hanging(source)), ceilingEvent())
+    expect(result?.gridPosition[1]).toBeCloseTo(0, 6)
   })
 })

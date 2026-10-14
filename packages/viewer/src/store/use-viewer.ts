@@ -1,6 +1,13 @@
 'use client'
 
-import type { AnyNode, BaseNode, BuildingNode, LevelNode, ZoneNode } from '@pascal-app/core'
+import type {
+  AnyNode,
+  BaseNode,
+  BuildingNode,
+  LevelNode,
+  UnitNode,
+  ZoneNode,
+} from '@pascal-app/core'
 import type { Object3D } from 'three'
 
 import { create } from 'zustand'
@@ -27,12 +34,19 @@ type Outliner = {
 
 type ViewerState = {
   selection: SelectionPath
+  focusedUnitId: UnitNode['id'] | null
+  setFocusedUnit: (id: UnitNode['id'] | null) => void
   previewSelectedIds: BaseNode['id'][]
   setPreviewSelectedIds: (ids: BaseNode['id'][]) => void
   /** Host-owned selection highlights rendered through the viewer's native
    * selection paths without changing the local user's editable selection. */
   externalSelectedIds: BaseNode['id'][]
   setExternalSelectedIds: (ids: BaseNode['id'][]) => void
+  /** Elements a chat context chip points at (Point and ask), drawn in the `point` outline style.
+   * Its own slot, so a teammate's highlight in `externalSelectedIds` is never clobbered. */
+  pointedIds: BaseNode['id'][]
+  /** `null` clears it. */
+  setPointedIds: (ids: BaseNode['id'][] | null) => void
   hoverHighlightMode: string
   setHoverHighlightMode: (mode: string) => void
   hoveredId: AnyNode['id'] | ZoneNode['id'] | null
@@ -42,7 +56,12 @@ type ViewerState = {
   setCameraMode: (mode: 'perspective' | 'orthographic') => void
 
   sceneTheme: string
+  /** The user's own pick, and the only theme that persists. */
+  savedSceneTheme: string
   setSceneTheme: (id: string) => void
+  /** Show a theme without saving it (e.g. a project's own mood); `null`
+   *  returns to the saved one. */
+  showSceneTheme: (id: string | null) => void
 
   renderContext: RenderContext
   setRenderContext: (context: RenderContext) => void
@@ -94,6 +113,12 @@ type ViewerState = {
 
   levelMode: 'stacked' | 'exploded' | 'solo' | 'manual'
   setLevelMode: (mode: 'stacked' | 'exploded' | 'solo' | 'manual') => void
+  /**
+   * The editor's level display: stacked, with every level above the selected
+   * one hidden (the selected level and those below stay). Set by the host
+   * while editing; never persisted, so the viewer app keeps its own mode.
+   */
+  hideLevelsAboveSelection: boolean
 
   wallMode: WallMode
   setWallMode: (mode: WallMode) => void
@@ -148,8 +173,8 @@ type ViewerState = {
   bumpGeometryRevision: () => void
 
   // Export functionality
-  exportScene: ((format?: 'glb' | 'stl' | 'obj') => Promise<void>) | null
-  setExportScene: (fn: ((format?: 'glb' | 'stl' | 'obj') => Promise<void>) | null) => void
+  exportScene: ((format?: 'glb' | 'usdz' | 'stl' | 'obj') => Promise<void>) | null
+  setExportScene: (fn: ((format?: 'glb' | 'usdz' | 'stl' | 'obj') => Promise<void>) | null) => void
 
   debugColors: boolean
   setDebugColors: (enabled: boolean) => void
@@ -328,6 +353,8 @@ const useViewer = create<ViewerState>()(
   persist(
     (set) => ({
       selection: { buildingId: null, levelId: null, zoneId: null, selectedIds: [] },
+      focusedUnitId: null,
+      setFocusedUnit: (focusedUnitId) => set({ focusedUnitId }),
       previewSelectedIds: [],
       setPreviewSelectedIds: (ids) => set({ previewSelectedIds: ids }),
       externalSelectedIds: [],
@@ -341,6 +368,18 @@ const useViewer = create<ViewerState>()(
           }
           return { externalSelectedIds: ids }
         }),
+      pointedIds: [],
+      setPointedIds: (ids) =>
+        set((state) => {
+          const next = ids ?? []
+          if (
+            state.pointedIds.length === next.length &&
+            state.pointedIds.every((id, index) => id === next[index])
+          ) {
+            return state
+          }
+          return { pointedIds: next }
+        }),
       hoverHighlightMode: 'default',
       setHoverHighlightMode: (mode) =>
         set((state) => (state.hoverHighlightMode === mode ? state : { hoverHighlightMode: mode })),
@@ -351,7 +390,9 @@ const useViewer = create<ViewerState>()(
       setCameraMode: (mode) => set({ cameraMode: mode }),
 
       sceneTheme: 'studio',
-      setSceneTheme: (id) => set({ sceneTheme: id }),
+      savedSceneTheme: 'studio',
+      setSceneTheme: (id) => set({ sceneTheme: id, savedSceneTheme: id }),
+      showSceneTheme: (id) => set((state) => ({ sceneTheme: id ?? state.savedSceneTheme })),
 
       renderContext: 'editor',
       setRenderContext: (context) => set({ renderContext: context }),
@@ -406,6 +447,7 @@ const useViewer = create<ViewerState>()(
 
       levelMode: 'stacked',
       setLevelMode: (mode) => set({ levelMode: mode }),
+      hideLevelsAboveSelection: false,
 
       wallMode: 'up',
       setWallMode: (mode) => set({ wallMode: mode }),
@@ -542,13 +584,17 @@ const useViewer = create<ViewerState>()(
     }),
     {
       name: 'viewer-preferences',
-      merge: (persistedState, currentState) => ({
-        ...currentState,
-        ...normalizePersistedViewerState(persistedState),
-      }),
+      merge: (persistedState, currentState) => {
+        const persisted = normalizePersistedViewerState(persistedState)
+        return {
+          ...currentState,
+          ...persisted,
+          savedSceneTheme: persisted.sceneTheme ?? currentState.savedSceneTheme,
+        }
+      },
       partialize: (state) => ({
         cameraMode: state.cameraMode,
-        sceneTheme: state.sceneTheme,
+        sceneTheme: state.savedSceneTheme,
         shadingByContext: state.shadingByContext,
         textures: state.textures,
         colorPreset: state.colorPreset,

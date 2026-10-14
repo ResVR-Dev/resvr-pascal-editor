@@ -198,7 +198,7 @@ export default function SolarPanelPanel() {
                   'flex min-h-14 flex-col items-start gap-0.5 rounded-lg border px-2.5 py-2 text-left text-xs transition-colors',
                   isSelected
                     ? 'border-orange-400/60 bg-orange-400/10 text-foreground'
-                    : 'border-border/50 bg-[#2C2C2E] text-muted-foreground hover:bg-[#3e3e3e] hover:text-foreground',
+                    : 'border-border/50 bg-black/4 dark:bg-[#2C2C2E] text-muted-foreground hover:bg-black/8 dark:hover:bg-[#3e3e3e] hover:text-foreground',
                 )}
                 key={card.key}
                 onClick={() => handlePresetChange(card.key)}
@@ -255,7 +255,7 @@ export default function SolarPanelPanel() {
           restoreOnCommit={false}
           step={0.005}
           unit="m"
-          value={Math.round(num(node.gapX, 0.02) * 1000) / 1000}
+          value={num(node.gapX, 0.02)}
         />
         <SliderControl
           label="Gap Y"
@@ -267,12 +267,14 @@ export default function SolarPanelPanel() {
           restoreOnCommit={false}
           step={0.005}
           unit="m"
-          value={Math.round(num(node.gapY, 0.02) * 1000) / 1000}
+          value={num(node.gapY, 0.02)}
         />
         <ActionGroup>
           <ActionButton disabled={!segment} label="Auto-fit to roof" onClick={handleAutoFit} />
         </ActionGroup>
-        {autoFitMessage ? <p className="px-1 text-amber-400 text-xs">{autoFitMessage}</p> : null}
+        {autoFitMessage ? (
+          <p className="px-1 text-amber-700 dark:text-amber-400 text-xs">{autoFitMessage}</p>
+        ) : null}
       </PanelSection>
 
       <PanelSection title="Panel">
@@ -286,7 +288,7 @@ export default function SolarPanelPanel() {
           restoreOnCommit={false}
           step={0.05}
           unit="m"
-          value={Math.round(num(node.panelWidth, 1) * 100) / 100}
+          value={num(node.panelWidth, 1)}
         />
         <SliderControl
           label="Height"
@@ -298,7 +300,7 @@ export default function SolarPanelPanel() {
           restoreOnCommit={false}
           step={0.05}
           unit="m"
-          value={Math.round(num(node.panelHeight, 1.65) * 100) / 100}
+          value={num(node.panelHeight, 1.65)}
         />
         <ActionGroup>
           <ActionButton label="Flip orientation" onClick={handleFlip} />
@@ -313,7 +315,7 @@ export default function SolarPanelPanel() {
           restoreOnCommit={false}
           step={0.005}
           unit="m"
-          value={Math.round(num(node.frameThickness, 0.04) * 1000) / 1000}
+          value={num(node.frameThickness, 0.04)}
         />
         <SliderControl
           label="Frame depth"
@@ -325,7 +327,7 @@ export default function SolarPanelPanel() {
           restoreOnCommit={false}
           step={0.005}
           unit="m"
-          value={Math.round(num(node.frameDepth, 0.04) * 1000) / 1000}
+          value={num(node.frameDepth, 0.04)}
         />
       </PanelSection>
 
@@ -362,7 +364,7 @@ export default function SolarPanelPanel() {
           restoreOnCommit={false}
           step={0.005}
           unit="m"
-          value={Math.round(num(node.standoffHeight, 0.05) * 1000) / 1000}
+          value={num(node.standoffHeight, 0.05)}
         />
       </PanelSection>
 
@@ -370,7 +372,7 @@ export default function SolarPanelPanel() {
         <ActionGroup>
           <ActionButton
             className="hover:bg-red-500/20"
-            icon={<Trash2 className="h-3.5 w-3.5 text-red-400" />}
+            icon={<Trash2 className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />}
             label="Delete"
             onClick={handleDelete}
           />

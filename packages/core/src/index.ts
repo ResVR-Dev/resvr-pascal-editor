@@ -1,4 +1,15 @@
 export type {
+  PointAskPin,
+  PointAskStatus,
+  PointAskSubmit,
+  PointAskSubmitResult,
+  PointCamera,
+  PointContext,
+  PointImage,
+  PointTarget,
+} from './agent-operations/point-context'
+export * from './commands/structure'
+export type {
   BlockEvent,
   BoxVentEvent,
   BuildingEvent,
@@ -6,6 +17,7 @@ export type {
   CabinetModuleEvent,
   CameraControlEvent,
   CameraControlFitSceneEvent,
+  CameraControlFrameEvent,
   CameraPose,
   CeilingEvent,
   ChimneyEvent,
@@ -19,6 +31,7 @@ export type {
   GridEvent,
   GuideEvent,
   GutterEvent,
+  ImportedMeshEvent,
   ItemEvent,
   LeanToExtensionEvent,
   LevelEvent,
@@ -29,15 +42,21 @@ export type {
   RoofSegmentEvent,
   RoomPresetCreateEvent,
   ScanEvent,
+  SeparatorEvent,
   ShelfEvent,
   SiteEvent,
   SkylightEvent,
   SlabEvent,
+  SnapshotCapturedEvent,
+  SnapshotCaptureFailedEvent,
+  SnapshotCapturePose,
+  SnapshotSavedEvent,
   SolarPanelEvent,
   SpawnEvent,
   StairEvent,
   StairSegmentEvent,
   StructuralGridEvent,
+  ThumbnailGenerateEvent,
   WallEvent,
   WindowEvent,
   ZoneEvent,
@@ -93,7 +112,51 @@ export {
   type WallConstructionResolution,
 } from './hooks/spatial-grid/support-host-patch'
 export { useSpatialQuery } from './hooks/spatial-grid/use-spatial-query'
+export { createAngleAccumulator } from './lib/angle-accumulator'
+export {
+  ARTIFACT_URL_PREFIX,
+  type ArtifactStore,
+  artifactHash,
+  artifactUrl,
+  configureArtifactStore,
+  getArtifactStore,
+  resolveArtifactUrl,
+} from './lib/artifact-store'
+export {
+  type AssemblyDiagnostic,
+  type AssemblyDiagnosticCode,
+  type ResolvedAssembly,
+  type ResolvedAssemblyLayer,
+  resolveAssemblyStack,
+} from './lib/assembly-stack'
 export { loadAssetUrl, saveAsset } from './lib/asset-storage'
+export {
+  footprintOutline,
+  levelFootprintLoops,
+  levelFrame,
+  siteFrame,
+  turnPlanPoint,
+  yawOf,
+} from './lib/building-footprint'
+export {
+  CEILING_SURFACE_ROLE,
+  type CeilingSurfaceCell,
+  ceilingPaintRegions,
+  ceilingRegionRole,
+  ceilingRegionsOwner,
+  ceilingSurfaceSignature,
+  computeCeilingSurfaceCells,
+  parseCeilingRegionRole,
+} from './lib/ceiling-surface'
+export { cornerPair, fusesAtCorner } from './lib/corner-pair'
+export {
+  type CornerBlock,
+  type CornerBlockReason,
+  type CornerSnap,
+  evaluateCorner,
+} from './lib/corner-snap'
+export { criticallyDamped } from './lib/critically-damped'
+export { isCutterName, resolveCutterHost } from './lib/cutter-host'
 export {
   clampDoorOperationState,
   getDoorRenderOpenAmount,
@@ -101,6 +164,69 @@ export {
   isOperationDoorType,
   SECTIONAL_GARAGE_RENDER_OPEN_SCALE,
 } from './lib/door-operation'
+export { floorConstructionLift, liftedManualSlab } from './lib/floor-construction-lift'
+export { floorFootprintName } from './lib/floor-footprint-name'
+export {
+  automaticFloorHeight,
+  floorFootprintSupportClass,
+  floorPlateAtGroundContact,
+  floorPlateGestureMinimum,
+  floorPlateHoldsUnderside,
+  footprintLift,
+  groundFloorConstruction,
+  resolvedFootprintPlane,
+  upperFloorHeightControl,
+} from './lib/floor-foundation-datum'
+export { changedLevelConstructionDisplacements } from './lib/floor-foundation-stack'
+export {
+  isFloorAnchoredOpening,
+  openingAperture,
+  openingLandings,
+} from './lib/floor-opening-footprints'
+export {
+  adjacentLevelId,
+  floorOpeningTargets,
+  openingsForSurface,
+} from './lib/floor-opening-intent'
+export { type FloorPlatePaintRefusal, floorPlatePaintRefusal } from './lib/floor-plate-paint'
+export {
+  type FloorStepOverride,
+  floorStepOverrideFor,
+  floorStepRole,
+  floorStepRoleCovers,
+  parseFloorStepRole,
+  remapFloorStepOverrideKeys,
+  resolveFloorStepFinish,
+  withFloorStepOverride,
+  withoutFloorStepOverrideKeys,
+} from './lib/floor-step-finish'
+export {
+  ceilingSeatY,
+  isScriptedNode,
+  matchScriptSlotsToLibrary,
+  type ScriptedNode,
+  scriptedObjectMeta,
+  scriptedOrigin,
+  scriptedSize,
+  scriptImages,
+  scriptInteractive,
+  scriptSource,
+} from './lib/geometry-script-node'
+export {
+  flushMountRotation,
+  geometryRestingHeight,
+  geometrySurfaceAt,
+  geometryUndersideAt,
+  mountsFlush,
+  nearestPointIn,
+  resettledPosition,
+} from './lib/geometry-surfaces'
+export {
+  type ExposedInterval,
+  exposedIntervals,
+  plateFootprint,
+  roomClearPolygon,
+} from './lib/level-footprints'
 export { getDefaultLevelName, getLevelDisplayName } from './lib/level-name'
 export {
   areMeasurementPointsCoplanar,
@@ -121,6 +247,61 @@ export {
   remapMeasurementAnchors,
   remapMeasurementReferences,
 } from './lib/measurement-geometry'
+export { newZone } from './lib/new-zone'
+export { HIDDEN_SITE_NOTE, hidesDescendants } from './lib/node-visibility'
+export {
+  cutterContextNodes,
+  getEffectiveCutterNode,
+  hostedCutterHoles,
+  withHostedCutterHoles,
+} from './lib/object-cuts'
+export {
+  getOpeningFloorDatum,
+  getOpeningWallCut,
+  getOpeningWallPlacement,
+  openingDatumFromSupport,
+  wallSupportForNodes,
+} from './lib/opening-floor-datum'
+export {
+  classifyPlateSideAt,
+  clearPlateSurfaceCaches,
+  computePlateSurfacePartition,
+  floorStepKeysOf,
+  isFloorPlate,
+  levelWallCover,
+  type PlateFinish,
+  type PlateLevelContext,
+  type PlateSideInterval,
+  type PlateSideRole,
+  type PlateSurfacePartition,
+  type PlateTopCell,
+  parseRoomFinishRole,
+  plateFinishKey,
+  plateLevelContext,
+  platePartitionSignature,
+  plateSideRuns,
+  roomFinishRole,
+} from './lib/plate-surface'
+export {
+  hasPointAskHandler,
+  type PointAskHandler,
+  registerPointAskHandler,
+  submitPointAsk,
+  useHasPointAskHandler,
+} from './lib/point-ask'
+export {
+  area,
+  containsPoint,
+  difference,
+  distanceToBoundary,
+  intersection,
+  type MultiPolygon,
+  type Polygon,
+  type PolygonInput,
+  type Ring,
+  union,
+} from './lib/polygon-boolean'
+export { polygonInteriorPoint } from './lib/polygon-label'
 export {
   type Point2D as PolygonPoint2D,
   pointInPolygon as pointInPolygon2D,
@@ -146,11 +327,84 @@ export {
   roofPlanBoundsOverlap,
   roofPlanOverlapEntryOwns,
 } from './lib/roof-overlap'
+export { type RoomDrawnFloor, roomDrawnFloor } from './lib/room-drawn-floor'
+export { type RoomFloorChoice, roomFloorChoices } from './lib/room-floor-choices'
+export {
+  checkRoomFloor,
+  clampRoomFloorHandle,
+  FLOOR_ELEVATION_EPSILON,
+  getRoomBaseElevation,
+  getRoomRelativeFloorElevation,
+  MIN_GROUND_FLOOR_THICKNESS,
+  MIN_SLAB_THICKNESS,
+  type RoomFloorConflict,
+  roomFloorElevationFromRelative,
+  roundFloorElevation,
+} from './lib/room-floor-feasibility'
+export type { OpenWallEnd } from './lib/room-graph'
+export { isAllocatedRoomName } from './lib/room-name'
+export {
+  type BoundaryNode,
+  type BoundarySpan,
+  type ExteriorBoundarySpan,
+  type IndexedTopologyDelta,
+  type LevelFootprintContext,
+  type LevelTopology,
+  RoomTopologyIndex,
+  type TopologyRoom,
+} from './lib/room-topology-index'
 export { resolveSelectionProxyId, selectionProxyIdFromMetadata } from './lib/selection-proxy'
 export {
+  arcRuns,
+  castYardDimensionsOriented,
+  classifyEdges,
+  type EdgeRole,
+  edgeHeadingDeg,
+  edgeLength,
+  envelopeFrontEdge,
+  insetPolygon,
+  type KeepOut,
+  mostNorthFacingEdge,
+  outwardNormal,
+  rayToPolygon,
+  resolveFrontEdge,
+  type SetbackInputs,
+  setbackEnvelope,
+  setbackForRole,
+  sightTriangle,
+  streetCorners,
+  type YardDimension,
+  type YardSide,
+} from './lib/setback-envelope'
+export {
+  type BuildableArea,
+  type BuildingPlacement,
+  buildingFootprintRings,
+  describeSiteBrief,
+  lotOverhang,
+  measureFootprint,
+  type PlaceBuildingInput,
+  type PlacementRefusal,
+  type PlanBounds,
+  type PlanSide,
+  placeBuildingPose,
+  resolveSiteBuilding,
+  roundedSiteBrief,
+  type SiteBrief,
+  type SiteFootprint,
+  siteBrief,
+  siteFrontEdge,
+  siteSetbackEnvelope,
+  type YardKey,
+} from './lib/site-placement'
+export {
   getRenderableSlabPolygon,
+  prepareSlabPolygonContext,
   type SlabEdgeWallBandSnap,
   type SlabPolygonContext,
+  scopeSlabPolygonContext,
+  slabPolygonContextChanges,
+  slabPolygonContextForLevel,
   slabPolygonContextFromGeometry,
   snapSlabEdgeToWallBand,
 } from './lib/slab-polygon'
@@ -158,28 +412,39 @@ export {
   deriveSlotId,
   isSlotMaterialName,
   SLOT_MATERIAL_PREFIX,
+  slotDefaultPaintMaterial,
   slotLabelFromId,
+  slotPaintMaterial,
 } from './lib/slots'
+export { createSnapEaser, prefersReducedMotion } from './lib/snap-ease'
 export {
-  type AutoCeilingPlanningContext,
-  type AutoCeilingSyncPlan,
-  type AutoSlabPlanningContext,
-  type AutoSlabSyncPlan,
-  type AutoZoneSyncPlan,
+  createRoomTopologyIndex,
   detectSpacesForLevel,
+  type ExtractedRoom,
+  extractRooms,
   initSpaceDetectionSync,
   isSpaceDetectionPaused,
   pauseSpaceDetection,
-  planAutoCeilingsForLevel,
-  planAutoSlabsForLevel,
-  planAutoZonesForLevel,
-  resolveAutoZonePolygon,
   resumeSpaceDetection,
   type Space,
   type SpaceBoundaryFace,
   wallClosesRoom,
   wallTouchesOthers,
 } from './lib/space-detection'
+export { applyStructureReconciliation } from './lib/structure-commit'
+export {
+  createLevelStructurePreview,
+  type LevelStructureSnapshot,
+  type NodePatch,
+  reconcileLevelStructure,
+  type StructureEvent,
+} from './lib/structure-kernel'
+export {
+  reconcileSceneStructure,
+  type SceneStructureInput,
+  type SceneStructureResult,
+  type StructureIdFactory,
+} from './lib/structure-reconcile'
 export {
   advanceStroke,
   type BrushSettings,
@@ -206,6 +471,7 @@ export {
   encodeTerrainField,
   isDatumField,
 } from './lib/terrain-codec'
+export { type Contour, terrainContours } from './lib/terrain-contours'
 export {
   applyHeightPatch,
   createTerrainField,
@@ -241,6 +507,14 @@ export {
   terrainSupportLift,
 } from './lib/terrain-support'
 export {
+  deriveUnit,
+  type UnitDerivation,
+  unassignedZoneIds,
+  unitsForZone,
+  unitWarnings,
+} from './lib/unit-containment'
+export { buildUnitReport, type UnitReport } from './lib/unit-report'
+export {
   closestOnSegment,
   collectLevelWallSegments,
   nearestWallSegment,
@@ -248,6 +522,7 @@ export {
   type WallSegment,
   type WallSegmentClosest,
 } from './lib/wall-distance'
+export { ZONE_COLOR_PALETTE, zoneColorForSeed } from './lib/zone-colors'
 export {
   deriveZoneQuantityReport,
   type ZoneQuantityReport,
@@ -270,7 +545,9 @@ export {
   type MaterialRef,
   type MaterialSource,
   type MaterialSurface,
+  materialColorPaint,
   type ParsedMaterialRef,
+  parseMaterialColor,
   parseMaterialRef,
   registerLibraryMaterials,
   SCENE_MATERIAL_REF_PREFIX,
@@ -279,6 +556,8 @@ export {
   toSceneMaterialRef,
   unregisterLibraryMaterials,
 } from './material-library'
+export * from './node-slots'
+export { matchPascalMaterial, type PascalMaterialHints } from './procedural-items/library-colors'
 export type {
   FloorPlacedFootprint,
   FloorPlacedFootprintContext,
@@ -294,24 +573,77 @@ export * from './schema'
 export * from './services'
 export { isMovable, movePlanToward, moveToward, resolveMovable } from './services/movement'
 export {
+  collectionIdsOf,
+  getPendingNodeUpdateCount,
+  joinCollections,
+  type NodeDeletionPlan,
+  type NodeDeletionScene,
+  planNodeDeletion,
+  planSceneNodeChanges,
+  previewDefaultGutterRefresh,
+} from './store/actions/node-actions'
+export {
+  assertDerivedNodeWrites,
+  type DerivedNodeChanges,
+  DerivedNodeWriteError,
+  type DerivedSurfaceNode,
+  type DerivedWriteOperation,
+  derivedDeletionIntent,
+  derivedFieldViolations,
+  isDerivedNode,
+} from './store/derived-node-guard'
+export {
+  acquireSceneCommitAuthor,
   acquireSceneHistoryPause,
+  activeSceneCommitNodeIds,
+  beginSceneHistoryPauseSession,
   getSceneHistoryPauseDepth,
+  isApplyingRemoteSceneChange,
+  isRestoringSceneHistory,
   pauseSceneHistory,
   resetSceneHistoryPauseDepth,
   resumeSceneHistory,
+  runAsSceneCommitAuthor,
   runAsSingleSceneHistoryStep,
   type SceneCommit,
+  type SceneCommitAuthor,
   type SceneCommitListener,
   type SceneCommitOrigin,
+  type SceneHistoryPauseSession,
+  type SceneHistoryPauseSessionOptions,
   type SceneSnapshot,
   subscribeSceneCommits,
 } from './store/history-control'
+export { withSceneHistoryDraftSuspended } from './store/history-drafts'
+export { getHistoryDirtyNodeIds } from './store/history-invalidation'
+export {
+  type ItemInteraction,
+  itemInteraction,
+  itemPrompt,
+  operateItem,
+} from './store/item-interaction'
+export { materializeRegisteredNodeDefaults } from './store/registered-node-defaults'
+export {
+  readSceneNodeField,
+  SCENE_IMAGE_FIELD,
+  withoutSceneNodeAnnotations,
+  withSceneNodeBuildImages,
+  writeSceneNodeField,
+} from './store/scene-annotations'
+export {
+  beginScenePreview,
+  endScenePreview,
+  isScenePreviewing,
+  type ScenePreview,
+  subscribeScenePreview,
+} from './store/scene-preview'
 export {
   type ControlValue,
   type DoorAnimationState,
   type DoorInteractiveState,
   type ElevatorInteractiveState,
   type ElevatorPhase,
+  type InteractiveState,
   type ItemInteractiveState,
   type SkylightAnimationState,
   type SkylightInteractiveState,
@@ -335,13 +667,19 @@ export {
   applySceneOperationPatch,
   applyScenePatch,
   applySceneSnapshot,
+  beginSceneHistoryDraft,
   clearSceneHistory,
   default as useScene,
+  getSceneDocument,
+  runSceneHistoryDraftWrite,
   type SceneMaterialPatch,
   type SceneNodePatch,
   type SceneNodeStructuralPatch,
   type SceneOperationPatch,
   type ScenePatch,
+  type ScenePluginInstallPatch,
+  sceneHistoryDraftRevertUpdates,
+  settleSceneHistoryDrafts,
 } from './store/use-scene'
 export { resolveElevatorDispatchTarget } from './systems/elevator/elevator-dispatch'
 export {
@@ -382,25 +720,175 @@ export {
   getFenceCenterlineLength,
   sampleFenceCenterline,
 } from './systems/fence/fence-centerline'
+export type {
+  FenceFeatureData,
+  FenceWithFeatures,
+  ResolvedFenceFeature,
+} from './systems/fence/fence-features'
+export {
+  canPlaceFenceFeature,
+  fenceFeatureData,
+  fenceFeaturePlacementIssue,
+  fenceWithFeatures,
+  getFenceGateLeaves,
+  isFenceFeatureNode,
+  projectPointToFence,
+  resolveFenceFeatures,
+} from './systems/fence/fence-features'
+export type { FenceSpanMode } from './systems/fence/fence-spline'
 export {
   getFenceControlHandle,
+  getFenceSpanMode,
   getFenceSplineFrameAt,
   getFenceSplineLength,
   getTwoPointFenceCurveTangents,
   isSplineFence,
   sampleFenceSpline,
 } from './systems/fence/fence-spline'
+export { planOwnedFloorOpenings } from './systems/owned-floor-openings'
+export { resolveRoofElevation, resolveRoofWallTopElevation } from './systems/roof/roof-elevation'
+export { RoofElevationSystem } from './systems/roof/roof-elevation-system'
+export {
+  fitRoofFootprint,
+  type RoofFootprintTarget,
+  resolveRoomRoofFootprint,
+  resolveRoomRoofFootprintOnLevel,
+} from './systems/roof/roof-footprint'
 export { resolveSlabPlacementElevation } from './systems/slab/slab-placement'
 export {
   clampSlabElevationForWalls,
+  computeWallSlabSupport,
   getSlabElevationUpperBound,
+  resolveWallFaceBottom,
   type SlabElevationClamp,
+  type WallSlabSupport,
 } from './systems/slab/slab-support'
-export { type StairFootprintAABB, stairFootprintAABB } from './systems/stair/stair-footprint'
+export {
+  measureStairHeadroom,
+  resolveStairWalkingSurfaces,
+  type StairBodySurface,
+  type StairWalkingSurface,
+  stairClearanceOpening,
+} from './systems/stair/stair-clearance'
+export {
+  resolveArcStairConstruction,
+  resolveStairConstruction,
+  resolveStraightStairConstruction,
+  type StairArcConstructionPiece,
+  type StairConstructionPiece,
+  stairArcSliceCount,
+  stairConstructionError,
+  stairSegmentConstructionError,
+} from './systems/stair/stair-construction'
+export {
+  measureStairDetail,
+  STAIR_DETAIL_SURFACE_BUDGET,
+  stairSegmentDetailError,
+} from './systems/stair/stair-detail-budget'
+export {
+  createDefaultStairSegment,
+  createStairFlightFromStair,
+  type StairFlightOverrides,
+} from './systems/stair/stair-flight'
+export {
+  computeStairSegmentFloorStackTransforms,
+  getStairFloorPlacedFootprints,
+  getStairSegmentFloorPlacedFootprints,
+} from './systems/stair/stair-floor-footprints'
+export {
+  computeSegmentTransforms,
+  rotateXZ,
+  type StairFootprintAABB,
+  stairDeckLevelId,
+  stairFootprintAABB,
+} from './systems/stair/stair-footprint'
+export {
+  resolveStairArcDimensions,
+  resolveStairArcLayout,
+  type StairArcStep,
+} from './systems/stair/stair-layout'
 export { createSurfaceOpeningPreviewController } from './systems/stair/stair-opening-preview'
-export { syncAutoStairOpenings } from './systems/stair/stair-opening-sync'
+export {
+  changedStairOpeningOwners,
+  syncAutoStairOpenings,
+} from './systems/stair/stair-opening-sync'
 export { StairOpeningSystem } from './systems/stair/stair-opening-system'
+export {
+  planStairPreset,
+  proposeStairLayouts,
+  type StairLayoutPreset,
+  type StairPresetOptions,
+} from './systems/stair/stair-presets'
+export {
+  resolveStairHandrailPaths,
+  resolveStairRailPaths,
+  resolveStairWalkInside,
+  type StairRailPath,
+} from './systems/stair/stair-rail-path'
 export { resolveStairTotalRise, syncStairRises } from './systems/stair/stair-rise'
+export { planStairFlightHeightEdit, planStairRiseEdit } from './systems/stair/stair-rise-edit'
+export { stairHasNoRise } from './systems/stair/stair-rise-query'
+export {
+  createSizedStairFlight,
+  DEFAULT_STAIR_DESIGN_TARGETS,
+  measureStair,
+  planStairCreation,
+  planStairSizing,
+  planStairSizingEdit,
+  type StairDiagnostic,
+} from './systems/stair/stair-sizing'
+export { planStairSweepEdit } from './systems/stair/stair-sweep-edit'
+export {
+  resolveStairWalkingPaths,
+  type StairWalkingPoint,
+} from './systems/stair/stair-walking-line'
+export {
+  resolveStairWinder,
+  resolveStairWinderFootprint,
+  resolveWinderStairConstruction,
+  type StairWinderConstructionPiece,
+  type StairWinderLayout,
+  type StairWinderPoint,
+} from './systems/stair/stair-winder'
+export {
+  assemblyThickness,
+  BRICK_AIR_SPACE,
+  BRICK_VENEER,
+  CMU_8_ACTUAL,
+  calculateLevelLayerMiters,
+  FIBER_CEMENT,
+  FURRING_1X,
+  GYPSUM_FIVE_EIGHTHS,
+  GYPSUM_HALF,
+  GYPSUM_SHEATHING,
+  getWallAssemblyPreset,
+  getWallLayerPolylines,
+  isLegacyWallAssembly,
+  type ResolvedWallAssembly,
+  resolveWallAssembly,
+  resolveWallExteriorSide,
+  SIDING_LAP,
+  STONE_VENEER_UNVERIFIED,
+  STUCCO_3_COAT,
+  STUD_2X4,
+  STUD_2X6,
+  WALL_ASSEMBLY_PRESETS,
+  WALL_FINISH_LIBRARY_REF,
+  type WallAssemblyLayer,
+  type WallAssemblyLayerRole,
+  type WallAssemblyPreset,
+  type WallLayerMiterData,
+  type WallLayerPolyline,
+  WSP_SHEATHING,
+  wallAssemblyExteriorFinish,
+  wallAssemblyFinishRef,
+  wallAssemblyFraming,
+  wallAssemblyFromLegacy,
+  wallAssemblyPatch,
+  wallAssemblyToLegacy,
+  wallAssemblyUnverifiedNote,
+  wallLayerBoundaryOffsets,
+} from './systems/wall/wall-assembly'
 export {
   constrainWallCurveOffsetToAvoidIntersections,
   getClampedWallCurveOffset,
@@ -409,6 +897,7 @@ export {
   getWallChordFrame,
   getWallCurveFrameAt,
   getWallCurveLength,
+  getWallCurveStationAtPoint,
   getWallMidpointHandlePoint,
   getWallStraightSnapOffset,
   getWallSurfacePolygon,
@@ -417,11 +906,51 @@ export {
   sampleWallCenterline,
 } from './systems/wall/wall-curve'
 export {
+  buildWallFinishLayout,
+  getWallLevelZones,
+  getWallZoneSpans,
+  parseWallPaintRole,
+  resolveWallFaceChain,
+  resolveWallFinish,
+  type WallFaceChainFinish,
+  type WallFinishHit,
+  type WallFinishLayout,
+  type WallFinishSpan,
+  type WallPaintRole,
+  type WallZoneSpan,
+  wallFinishMaterialIndex,
+  wallRegionRole,
+  wallRoomFaceRole,
+  wallRoomFinishRole,
+  zoneHasWallFinish,
+} from './systems/wall/wall-finish'
+export {
   DEFAULT_WALL_HEIGHT,
   DEFAULT_WALL_THICKNESS,
   getWallPlanFootprint,
   getWallThickness,
 } from './systems/wall/wall-footprint'
+export {
+  buildWallJustificationPatch,
+  faceOnLine,
+  getWallBodyCenterOffset,
+  getWallBodyLine,
+  getWallFaceAtLocalPoint,
+  getWallFaceLine,
+  getWallFaceOffsets,
+  getWallLocalFaceZ,
+  justificationForFaceOnLine,
+  planWallJustification,
+  reverseWallDirection,
+  type WallFaceOffsets,
+  type WallJustification,
+} from './systems/wall/wall-frame'
+export {
+  getWallLayerBands,
+  type WallLayerBand,
+  type WallLayerBands,
+} from './systems/wall/wall-layer-bands'
+export { planWallMerge } from './systems/wall/wall-merge'
 export {
   calculateLevelMiters,
   getAdjacentWallIds,
@@ -444,17 +973,40 @@ export {
   type WallPlanPoint,
 } from './systems/wall/wall-move'
 export {
+  planWallDivision,
+  planWallDivisions,
+  planWallRectangle,
+  wallRectangleCorners,
+} from './systems/wall/wall-operations'
+export { plannedWallIds, planWallPaint } from './systems/wall/wall-paint-plan'
+export { roomSideFaces } from './systems/wall/wall-room-sides'
+export { wallDoorStepRuns } from './systems/wall/wall-step-openings'
+export {
   MIN_WALL_HEIGHT,
   resolveWallEffectiveHeight,
   resolveWallTop,
+  wallFollowsStorey,
 } from './systems/wall/wall-top'
 export {
+  findOpenWallEnds,
+  planJoinOpenWallEnd,
+  planWallEndRejoins,
   planWallInsertion,
   planWallSplitAtPoint,
+  type WallInsertionPlan,
+  type WallJoinResult,
+  type WallTopologyChanges,
 } from './systems/wall/wall-topology'
 export type { SceneGraph } from './utils/clone-scene-graph'
 export { cloneLevelSubtree, cloneSceneGraph, forkSceneGraph } from './utils/clone-scene-graph'
+export { areSemanticValuesEqual } from './utils/semantic-equal'
 export { isObject } from './utils/types'
+export {
+  checkOpeningWithinWall,
+  formatOpeningBoundsIssue,
+  OPENING_BOUNDS_TOLERANCE,
+  type OpeningBoundsIssue,
+} from './validation/opening-bounds'
 export {
   type BuildStats,
   type ParsedBuildJson,

@@ -9,7 +9,6 @@ import { InlineRenameInput } from './inline-rename-input'
 import {
   focusTreeNode,
   handleTreeSelection,
-  routeTreeSelectionToNode,
   TreeNode,
   TreeNodeWrapper,
 } from './tree-node'
@@ -24,7 +23,7 @@ interface ShelfTreeNodeProps {
 /**
  * Sidebar tree entry for shelf. Mirrors `item-tree-node`'s shape so the
  * shelf's hosted items list as collapsible children — same pattern items
- * use for their nested items. The shelf has its own `children: ItemNode[`id`]`
+ * use for their nested items. The shelf has its own `children: string[]`
  * field on the schema; items reparent into it via `def.surfaces` + the
  * placement coordinator's shelf strategy.
  */
@@ -69,15 +68,9 @@ export const ShelfTreeNode = memo(function ShelfTreeNode({
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation()
-      handleTreeSelection(
-        e,
-        nodeId,
-        useViewer.getState().selection.selectedIds,
-        setSelection,
-      )
-      routeTreeSelectionToNode(node)
+      handleTreeSelection(e, nodeId, useViewer.getState().selection.selectedIds, setSelection)
     },
-    [node, nodeId, setSelection],
+    [nodeId, setSelection],
   )
 
   const handleDoubleClick = useCallback(() => focusTreeNode(nodeId), [nodeId])
@@ -124,7 +117,7 @@ export const ShelfTreeNode = memo(function ShelfTreeNode({
             depth={depth + 1}
             isLast={index === children.length - 1}
             key={childId}
-            nodeId={childId}
+            nodeId={childId as AnyNodeId}
           />
         ))}
     </TreeNodeWrapper>

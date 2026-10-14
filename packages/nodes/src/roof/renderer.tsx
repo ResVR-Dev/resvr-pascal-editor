@@ -9,7 +9,15 @@ import {
   useRegistry,
   useScene,
 } from '@pascal-app/core'
-import { getRoofMaterialArray, NodeRenderer, useNodeEvents, useViewer } from '@pascal-app/viewer'
+import {
+  getRoofMaterialArray,
+  isRevealAssembling,
+  levelWallCladdingRef,
+  NodeRenderer,
+  subscribeRevealAssembling,
+  useNodeEvents,
+  useViewer,
+} from '@pascal-app/viewer'
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type * as THREE from 'three'
 import { useShallow } from 'zustand/react/shallow'
@@ -27,6 +35,31 @@ export const RoofRenderer = ({ node: rawNode }: { node: RoofNode }) => {
   useRegistry(node.id, 'roof', ref)
   useLayoutEffect(() => {
     useScene.getState().markDirty(node.id)
+  }, [node.id])
+
+  // A roof an agent builds assembles: its segments drop in drawn apart, then
+  // the merged shell (built meanwhile) takes over. Imperative and synchronous,
+  // so a capture that ends the reveal sees the whole shell in the same tick.
+  useLayoutEffect(() => {
+    const group = ref.current
+    const show = (assembling: boolean) => {
+      const merged = group.getObjectByName('merged-roof')
+      const wrapper = group.getObjectByName('segments-wrapper')
+      const elements = group.getObjectByName('roof-elements')
+      if (merged) merged.visible = !assembling
+      if (wrapper) wrapper.visible = assembling
+      if (elements) elements.visible = !assembling
+      if (assembling || !wrapper) return
+      // Hidden meshes still meet rays: back to empty placeholders, as after a reload.
+      for (const child of wrapper.children) {
+        const mesh = child as THREE.Mesh
+        if (!mesh.isMesh || mesh.geometry?.userData.placeholder) continue
+        mesh.geometry?.dispose()
+        mesh.geometry = createPlaceholderGeometry(4)
+      }
+    }
+    if (isRevealAssembling(node.id)) show(true)
+    return subscribeRevealAssembling(node.id, show)
   }, [node.id])
 
   const handlers = useNodeEvents(node, 'roof')
@@ -84,9 +117,21 @@ export const RoofRenderer = ({ node: rawNode }: { node: RoofNode }) => {
   // 4 groups map 1:1 to the roof's 4-material array (see getRoofMaterialArray).
   const placeholderGeometry = useMemo(() => createPlaceholderGeometry(4), [])
 
+  // The gable band is clad like the walls below it (their assemblies).
+  const wallCladdingRef = useScene((state) => levelWallCladdingRef(state.nodes, node))
+  const sceneMaterials = useScene((state) => state.materials)
   const customMaterial = useMemo(
-    () => getRoofMaterialArray(node, shading, textures, colorPreset, sceneTheme),
-    [node, shading, textures, colorPreset, sceneTheme],
+    () =>
+      getRoofMaterialArray(
+        node,
+        shading,
+        textures,
+        colorPreset,
+        sceneTheme,
+        wallCladdingRef,
+        sceneMaterials,
+      ),
+    [node, shading, textures, colorPreset, sceneTheme, wallCladdingRef, sceneMaterials],
   )
 
   const material = debugColors

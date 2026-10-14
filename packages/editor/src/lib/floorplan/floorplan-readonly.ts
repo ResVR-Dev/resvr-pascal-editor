@@ -10,10 +10,16 @@ export type FloorplanViewState = {
   unit: 'metric' | 'imperial'
   metricNotation?: 'meters' | 'millimeters'
   purpose?: 'edit' | 'document'
+  /** Sheet drafting conventions (see `FloorplanContextExtension.drafting`). */
+  drafting?: boolean
+  /** Room labels drawn as screen pills (see `FloorplanContextExtension.roomLabelOverlay`). */
+  roomLabelOverlay?: boolean
   wallDimensionReference?: FloorplanWallDimensionReference
   highlighted: boolean
   hovered: boolean
   moving: boolean
+  focusedUnitId?: string
+  focusedUnitMemberIds?: readonly string[]
   palette: FloorplanPalette | undefined
 }
 
@@ -52,10 +58,13 @@ export function buildFloorplanContext(
     siblings,
     parent,
     levelData,
+    sceneNodes: nodes,
     extensions: createFloorplanContextExtensions({
       automaticDimensions: viewState.automaticDimensions,
       metricNotation: viewState.metricNotation ?? 'meters',
       purpose: viewState.purpose ?? 'edit',
+      drafting: viewState.drafting === true,
+      roomLabelOverlay: viewState.roomLabelOverlay === true,
       wallDimensionReference: viewState.wallDimensionReference,
     }),
     viewState: viewState.palette
@@ -65,6 +74,8 @@ export function buildFloorplanContext(
           highlighted: viewState.highlighted,
           hovered: viewState.hovered,
           moving: viewState.moving,
+          focusedUnitId: viewState.focusedUnitId,
+          focusedUnitMemberIds: viewState.focusedUnitMemberIds,
           palette: viewState.palette,
         }
       : undefined,

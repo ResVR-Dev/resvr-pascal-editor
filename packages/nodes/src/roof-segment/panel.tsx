@@ -11,7 +11,6 @@ import {
   normalizeRoofSegmentTrim,
   ROOF_SHAPE_DEFAULTS,
   type RoofSegmentNode,
-  RoofSegmentNode as RoofSegmentNodeSchema,
   type RoofSegmentTrim,
   type RoofType,
   useScene,
@@ -19,6 +18,7 @@ import {
 import {
   ActionButton,
   ActionGroup,
+  duplicateNodeAndPickUp,
   PanelSection,
   PanelWrapper,
   SegmentedControl,
@@ -194,28 +194,8 @@ export default function RoofSegmentPanel() {
   }, [node, setRoofHostDragArmedId, setSelection, updateNode])
 
   const handleDuplicate = useCallback(() => {
-    if (!node?.parentId) return
-    triggerSFX('sfx:item-pick')
-
-    let duplicateInfo = structuredClone(node) as any
-    delete duplicateInfo.id
-    duplicateInfo.metadata = { ...duplicateInfo.metadata, isNew: true }
-    // Offset slightly so it's visible
-    duplicateInfo.position = [
-      duplicateInfo.position[0] + 1,
-      duplicateInfo.position[1],
-      duplicateInfo.position[2] + 1,
-    ]
-
-    try {
-      const duplicate = RoofSegmentNodeSchema.parse(duplicateInfo)
-      useScene.getState().createNode(duplicate, duplicate.parentId as AnyNodeId)
-      setSelection({ selectedIds: [] })
-      setMovingNode(duplicate)
-    } catch (e) {
-      console.error('Failed to duplicate roof segment', e)
-    }
-  }, [node, setSelection, setMovingNode])
+    if (node) duplicateNodeAndPickUp(node)
+  }, [node])
 
   const handleMove = useCallback(() => {
     if (node) {
@@ -397,7 +377,7 @@ export default function RoofSegmentPanel() {
             precision={2}
             step={0.5}
             unit="m"
-            value={Math.round(node.width * 100) / 100}
+            value={node.width}
           />
         ) : (
           <>
@@ -409,7 +389,7 @@ export default function RoofSegmentPanel() {
               precision={2}
               step={0.5}
               unit="m"
-              value={Math.round(node.width * 100) / 100}
+              value={node.width}
             />
             <SliderControl
               label="Depth"
@@ -419,7 +399,7 @@ export default function RoofSegmentPanel() {
               precision={2}
               step={0.5}
               unit="m"
-              value={Math.round(node.depth * 100) / 100}
+              value={node.depth}
             />
           </>
         )}
@@ -475,7 +455,7 @@ export default function RoofSegmentPanel() {
           precision={2}
           step={0.1}
           unit="m"
-          value={Math.round(node.wallHeight * 100) / 100}
+          value={node.wallHeight}
         />
       </PanelSection>
 
@@ -595,11 +575,7 @@ export default function RoofSegmentPanel() {
             precision={2}
             step={0.01}
             unit="m"
-            value={
-              Math.round(
-                (node.dutchTopRakeThickness ?? ROOF_SHAPE_DEFAULTS.dutchTopRakeThickness) * 100,
-              ) / 100
-            }
+            value={node.dutchTopRakeThickness ?? ROOF_SHAPE_DEFAULTS.dutchTopRakeThickness}
           />
           <SliderControl
             label="Top Rake Length"
@@ -609,9 +585,7 @@ export default function RoofSegmentPanel() {
             precision={2}
             step={0.01}
             unit="m"
-            value={
-              Math.round((node.dutchGabletRake ?? ROOF_SHAPE_DEFAULTS.dutchGabletRake) * 100) / 100
-            }
+            value={node.dutchGabletRake ?? ROOF_SHAPE_DEFAULTS.dutchGabletRake}
           />
         </PanelSection>
       )}
@@ -625,7 +599,7 @@ export default function RoofSegmentPanel() {
           precision={2}
           step={0.05}
           unit="m"
-          value={Math.round(node.wallThickness * 100) / 100}
+          value={node.wallThickness}
         />
         <SliderControl
           label="Deck Thick."
@@ -635,7 +609,7 @@ export default function RoofSegmentPanel() {
           precision={2}
           step={0.01}
           unit="m"
-          value={Math.round(node.deckThickness * 100) / 100}
+          value={node.deckThickness}
         />
         <SliderControl
           label="Overhang"
@@ -645,7 +619,7 @@ export default function RoofSegmentPanel() {
           precision={2}
           step={0.05}
           unit="m"
-          value={Math.round(node.overhang * 100) / 100}
+          value={node.overhang}
         />
         <SliderControl
           label="Shingle Thick."
@@ -655,8 +629,25 @@ export default function RoofSegmentPanel() {
           precision={2}
           step={0.01}
           unit="m"
-          value={Math.round(node.shingleThickness * 100) / 100}
+          value={node.shingleThickness}
         />
+        <ToggleControl
+          checked={node.fascia ?? false}
+          label="Fascia"
+          onChange={(checked) => handleUpdate({ fascia: checked })}
+        />
+        {node.fascia && (
+          <SliderControl
+            label="Fascia height"
+            max={0.6}
+            min={0.1}
+            onChange={(v) => handleUpdate({ fasciaHeight: v })}
+            precision={2}
+            step={0.01}
+            unit="m"
+            value={node.fasciaHeight ?? 0.184}
+          />
+        )}
       </PanelSection>
 
       <PanelSection title="Position">
@@ -670,7 +661,7 @@ export default function RoofSegmentPanel() {
           precision={2}
           step={0.05}
           unit="m"
-          value={Math.round(node.position[0] * 100) / 100}
+          value={node.position[0]}
         />
         <SliderControl
           label="Y"
@@ -682,7 +673,7 @@ export default function RoofSegmentPanel() {
           precision={2}
           step={0.05}
           unit="m"
-          value={Math.round(node.position[1] * 100) / 100}
+          value={node.position[1]}
         />
         <SliderControl
           label="Z"
@@ -694,7 +685,7 @@ export default function RoofSegmentPanel() {
           precision={2}
           step={0.05}
           unit="m"
-          value={Math.round(node.position[2] * 100) / 100}
+          value={node.position[2]}
         />
         {(node.roofType !== 'conical' || !conicalCoverage.fullCircle) && (
           <>
@@ -740,7 +731,7 @@ export default function RoofSegmentPanel() {
           />
           <ActionButton
             className="hover:bg-red-500/20"
-            icon={<Trash2 className="h-3.5 w-3.5 text-red-400" />}
+            icon={<Trash2 className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />}
             label="Delete"
             onClick={handleDelete}
           />

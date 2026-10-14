@@ -7,9 +7,14 @@ import {
   type ChimneyNode,
   type DormerNode,
   type GutterNode,
+  getLevelDisplayName,
+  isRoofOnStoreyWalls,
+  type LevelNode,
+  planRoofsOffStorey,
   type RidgeVentNode,
   type RoofNode,
   type RoofSegmentNode,
+  roofLevelAbove,
   type SkylightNode,
   type SolarPanelNode,
   type TurbineVentNode,
@@ -18,7 +23,9 @@ import {
 import {
   ActionButton,
   ActionGroup,
-  duplicateRoofSubtree,
+  commitParametricNodeFields,
+  duplicateNodeAndPickUp,
+  formatLinearMeasurement,
   PanelSection,
   PanelWrapper,
   SegmentedControl,
@@ -34,8 +41,9 @@ import { useShallow } from 'zustand/react/shallow'
 export default function RoofPanel() {
   const [ventType, setVentType] = useState<'box-vent' | 'ridge-vent' | 'turbine-vent'>('box-vent')
   const selectedId = useViewer((s) => s.selection.selectedIds[0])
+  const unit = useViewer((s) => s.unit)
+  const metricNotation = useViewer((s) => s.metricNotation)
   const setSelection = useViewer((s) => s.setSelection)
-  const updateNode = useScene((s) => s.updateNode)
   const setMovingNode = useEditor((s) => s.setMovingNode)
 
   const node = useScene((s) =>
@@ -145,6 +153,40 @@ export default function RoofPanel() {
     }),
   )
 
+  // A roof on the walls of the storey holding it (the agents' and the editor's roofs before the
+  // roof level) hides that storey's plan in solo and exploded views: offer to move it where it goes.
+  const levelMove = useScene(
+    useShallow((s) => {
+      if (!node || !isRoofOnStoreyWalls(s.nodes, node.id)) return null
+      const level = s.nodes[node.parentId as AnyNodeId] as LevelNode
+      const above = roofLevelAbove(s.nodes, level.id)
+      return {
+        storey: getLevelDisplayName(level),
+        label:
+          above.kind === 'roof'
+            ? 'Move to the roof level'
+            : `Move to ${getLevelDisplayName(above.level)}`,
+        roofs: level.children.filter((id) => isRoofOnStoreyWalls(s.nodes, id)).length,
+      }
+    }),
+  )
+
+  const handleMoveOffStorey = useCallback(() => {
+    if (!node?.parentId) return
+    const move = planRoofsOffStorey(useScene.getState().nodes, node.parentId)
+    if (!move) return
+    triggerSFX('sfx:item-place')
+    useScene.getState().applyNodeChanges({
+      create: move.changes.create.map((op) => ({
+        node: op.node,
+        parentId: op.parentId as AnyNodeId | undefined,
+      })),
+      update: move.changes.update.map(({ id, data }) => ({ id: id as AnyNodeId, data })),
+    })
+    // The storey in view hides the levels above it: the selection follows the roof up.
+    setSelection({ levelId: move.plan.levelId as LevelNode['id'], selectedIds: [node.id] })
+  }, [node, setSelection])
+
   const handleSelectElement = useCallback(
     (id: string) => {
       setSelection({ selectedIds: [id as AnyNode['id']] })
@@ -155,9 +197,9 @@ export default function RoofPanel() {
   const handleUpdate = useCallback(
     (updates: Partial<RoofNode>) => {
       if (!selectedId) return
-      updateNode(selectedId as AnyNode['id'], updates)
+      commitParametricNodeFields(selectedId as AnyNode['id'], updates)
     },
-    [selectedId, updateNode],
+    [selectedId],
   )
 
   const handleClose = useCallback(() => {
@@ -180,14 +222,7 @@ export default function RoofPanel() {
   )
 
   const handleDuplicate = useCallback(() => {
-    if (!node) return
-    triggerSFX('sfx:item-pick')
-
-    try {
-      duplicateRoofSubtree(node.id as AnyNodeId, { mode: 'move' })
-    } catch (e) {
-      console.error('Failed to duplicate roof', e)
-    }
+    if (node) duplicateNodeAndPickUp(node)
   }, [node])
 
   const handleMove = useCallback(() => {
@@ -247,11 +282,30 @@ export default function RoofPanel() {
       title={node.name || 'Roof'}
       width={300}
     >
+      {levelMove && (
+        <PanelSection title="Level">
+          <div className="flex flex-col gap-2 px-1 pb-1">
+            <p className="text-muted-foreground text-xs">
+              On {levelMove.storey} with its walls, so it hides that floor's plan in solo and
+              exploded views.
+              {levelMove.roofs > 1 && ` The floor's ${levelMove.roofs} roofs move together.`}
+            </p>
+            <button
+              className="w-full rounded-full bg-foreground/[0.08] px-3 py-2 font-medium text-foreground text-xs transition-colors hover:bg-foreground/[0.14]"
+              onClick={handleMoveOffStorey}
+              type="button"
+            >
+              {levelMove.label}
+            </button>
+          </div>
+        </PanelSection>
+      )}
+
       <PanelSection title="Segments">
         <div className="flex flex-col gap-1">
           {segments.map((seg, i) => (
             <button
-              className="flex items-center justify-between rounded-lg border border-border/50 bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-[#3e3e3e]"
+              className="flex items-center justify-between rounded-lg border border-border/50 bg-black/4 dark:bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-black/8 dark:hover:bg-[#3e3e3e]"
               key={seg.id}
               onClick={() => handleSelectSegment(seg.id)}
               type="button"
@@ -281,20 +335,46 @@ export default function RoofPanel() {
           precision={2}
           step={0.05}
           unit="m"
-          value={Math.round(node.position[0] * 100) / 100}
+          value={node.position[0]}
         />
-        <SliderControl
-          label="Y"
-          onChange={(v) => {
-            const pos = [...node.position] as [number, number, number]
-            pos[1] = v
-            handleUpdate({ position: pos })
-          }}
-          precision={2}
-          step={0.05}
-          unit="m"
-          value={Math.round(node.position[1] * 100) / 100}
-        />
+        {node.support?.kind !== 'roof' && (
+          <SegmentedControl
+            onChange={(mode) =>
+              handleUpdate({ support: { kind: mode === 'walls' ? 'walls' : 'level' } })
+            }
+            options={[
+              { label: 'Follows walls', value: 'walls' },
+              { label: 'Custom', value: 'custom' },
+            ]}
+            value={node.support?.kind === 'walls' ? 'walls' : 'custom'}
+          />
+        )}
+        {node.support?.kind === 'walls' ? (
+          <div className="px-1 text-[11px] text-muted-foreground">
+            Currently {formatLinearMeasurement(node.position[1], unit, metricNotation)}
+          </div>
+        ) : (
+          <SliderControl
+            label="Y"
+            onChange={(v) => {
+              const pos = [...node.position] as [number, number, number]
+              pos[1] = v
+              const current = useScene.getState().nodes[node.id]
+              handleUpdate({
+                position: pos,
+                ...(current?.type === 'roof' &&
+                current.support?.kind === 'walls' &&
+                Math.abs(v - current.position[1]) > 1e-4
+                  ? { support: { kind: 'level' as const } }
+                  : {}),
+              })
+            }}
+            precision={2}
+            step={0.05}
+            unit="m"
+            value={node.position[1]}
+          />
+        )}
         <SliderControl
           label="Z"
           onChange={(v) => {
@@ -305,7 +385,7 @@ export default function RoofPanel() {
           precision={2}
           step={0.05}
           unit="m"
-          value={Math.round(node.position[2] * 100) / 100}
+          value={node.position[2]}
         />
         <SliderControl
           label="Rotation"
@@ -342,7 +422,7 @@ export default function RoofPanel() {
           <div className="flex flex-col gap-1">
             {chimneys.map((chimney, i) => (
               <button
-                className="flex items-center justify-between rounded-lg border border-border/50 bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-[#3e3e3e]"
+                className="flex items-center justify-between rounded-lg border border-border/50 bg-black/4 dark:bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-black/8 dark:hover:bg-[#3e3e3e]"
                 key={chimney.id}
                 onClick={() => handleSelectElement(chimney.id)}
                 type="button"
@@ -363,7 +443,7 @@ export default function RoofPanel() {
           <div className="flex flex-col gap-1">
             {dormers.map((dormer, i) => (
               <button
-                className="flex items-center justify-between rounded-lg border border-border/50 bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-[#3e3e3e]"
+                className="flex items-center justify-between rounded-lg border border-border/50 bg-black/4 dark:bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-black/8 dark:hover:bg-[#3e3e3e]"
                 key={dormer.id}
                 onClick={() => handleSelectElement(dormer.id)}
                 type="button"
@@ -384,7 +464,7 @@ export default function RoofPanel() {
           <div className="flex flex-col gap-1">
             {skylights.map((skylight, i) => (
               <button
-                className="flex items-center justify-between rounded-lg border border-border/50 bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-[#3e3e3e]"
+                className="flex items-center justify-between rounded-lg border border-border/50 bg-black/4 dark:bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-black/8 dark:hover:bg-[#3e3e3e]"
                 key={skylight.id}
                 onClick={() => handleSelectElement(skylight.id)}
                 type="button"
@@ -405,7 +485,7 @@ export default function RoofPanel() {
           <div className="flex flex-col gap-1">
             {solarPanels.map((panel, i) => (
               <button
-                className="flex items-center justify-between rounded-lg border border-border/50 bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-[#3e3e3e]"
+                className="flex items-center justify-between rounded-lg border border-border/50 bg-black/4 dark:bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-black/8 dark:hover:bg-[#3e3e3e]"
                 key={panel.id}
                 onClick={() => handleSelectElement(panel.id)}
                 type="button"
@@ -426,7 +506,7 @@ export default function RoofPanel() {
           <div className="flex flex-col gap-1">
             {vents.map((vent, i) => (
               <button
-                className="flex items-center justify-between rounded-lg border border-border/50 bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-[#3e3e3e]"
+                className="flex items-center justify-between rounded-lg border border-border/50 bg-black/4 dark:bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-black/8 dark:hover:bg-[#3e3e3e]"
                 key={vent.id}
                 onClick={() => handleSelectElement(vent.id)}
                 type="button"
@@ -489,7 +569,7 @@ export default function RoofPanel() {
           <div className="flex flex-col gap-1">
             {gutters.map((gutter, i) => (
               <button
-                className="flex items-center justify-between rounded-lg border border-border/50 bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-[#3e3e3e]"
+                className="flex items-center justify-between rounded-lg border border-border/50 bg-black/4 dark:bg-[#2C2C2E] px-3 py-2 text-foreground text-sm transition-colors hover:bg-black/8 dark:hover:bg-[#3e3e3e]"
                 key={gutter.id}
                 onClick={() => handleSelectElement(gutter.id)}
                 type="button"
@@ -519,7 +599,7 @@ export default function RoofPanel() {
           />
           <ActionButton
             className="hover:bg-red-500/20"
-            icon={<Trash2 className="h-3.5 w-3.5 text-red-400" />}
+            icon={<Trash2 className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />}
             label="Delete"
             onClick={handleDelete}
           />

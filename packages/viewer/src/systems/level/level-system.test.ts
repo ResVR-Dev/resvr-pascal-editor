@@ -1,55 +1,18 @@
-// @ts-expect-error — bun:test is provided by the Bun runtime; viewer does not
-// include Bun ambient types in its production declaration build.
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AnyNode, AnyNodeId } from '@pascal-app/core'
 import { sceneRegistry, useScene } from '@pascal-app/core'
-import type { Object3D } from 'three'
+import { create } from '@react-three/test-renderer'
+import { createElement } from 'react'
+import { Object3D } from 'three'
+import useViewer from '../../store/use-viewer'
+import { LevelSystem } from './level-system'
+import { snapLevelsToTruePositions } from './level-utils'
 
-// Only the two modules that need a renderer or a React context are mocked.
-// `@pascal-app/core` is deliberately NOT mocked: mock.module replaces a module
-// for the whole test process and Bun never restores it, so faking core here
-// breaks the other viewer suites that run after this file.
-type FrameCallback = (state: unknown, delta: number) => void
-let frameCallback: FrameCallback | null = null
+let previousViewerState = useViewer.getState()
 
-// Read through a function so the value is not control-flow narrowed. The
-// useFrame mock assigns frameCallback while LevelSystem() runs; TypeScript
-// cannot see through that indirection, so reading the binding directly after
-// `frameCallback = null` narrows it to `null` and types the call `never`.
-function takeFrameCallback(): FrameCallback | null {
-  return frameCallback
-}
-
-mock.module('@react-three/fiber', () => ({
-  useFrame: (callback: FrameCallback) => {
-    frameCallback = callback
-  },
-}))
-
-let viewerState = {
-  levelMode: 'stacked' as 'stacked' | 'exploded' | 'solo',
-  selection: { levelId: null as string | null },
-}
-
-mock.module('../../store/use-viewer', () => ({
-  default: {
-    getState: () => viewerState,
-  },
-}))
-
-const [{ LevelSystem }, { snapLevelsToTruePositions }] = await Promise.all([
-  import('./level-system'),
-  import('./level-utils'),
-])
-
-/** Stand-in for a level's Object3D — LevelSystem only touches these fields. */
-function fakeLevelObject(): Object3D {
-  return {
-    position: { y: -100 },
-    visible: true,
-    layers: { mask: 0 },
-  } as unknown as Object3D
-}
+beforeEach(() => {
+  previousViewerState = useViewer.getState()
+})
 
 function setupLevels(baseElevations: number[]) {
   const buildingId = 'building_base-elevation-system-test'
@@ -81,7 +44,8 @@ function setupLevels(baseElevations: number[]) {
   useScene.setState({ nodes })
 
   const objects = levels.map((level) => {
-    const object = fakeLevelObject()
+    const object = new Object3D()
+    object.position.y = -100
     sceneRegistry.nodes.set(level.id, object)
     sceneRegistry.byType.level!.add(level.id)
     return object
@@ -90,54 +54,121 @@ function setupLevels(baseElevations: number[]) {
   return { building, levels, objects }
 }
 
+function hideLevel(levelId: string) {
+  const nodes = useScene.getState().nodes
+  const level = nodes[levelId as AnyNodeId]!
+  useScene.setState({ nodes: { ...nodes, [levelId]: { ...level, visible: false } } })
+}
+
 function setLevelMode(
   mode: 'stacked' | 'exploded' | 'solo',
   selectedLevelId: string | null = null,
 ) {
-  viewerState = {
+  useViewer.setState({
     levelMode: mode,
-    selection: { levelId: selectedLevelId },
-  }
+    selection: { ...useViewer.getState().selection, levelId: selectedLevelId },
+  })
 }
 
-function updateLevelPresentation(delta: number) {
-  frameCallback = null
-  LevelSystem()
-  const callback = takeFrameCallback()
-  expect(callback).not.toBeNull()
-  callback?.({}, delta)
+async function updateLevelPresentation(delta: number) {
+  const renderer = await create(createElement(LevelSystem))
+  try {
+    await renderer.advanceFrames(1, delta)
+  } finally {
+    await renderer.unmount()
+  }
 }
 
 afterEach(() => {
   sceneRegistry.clear()
   useScene.setState({ nodes: {} as Record<AnyNodeId, AnyNode> })
+  useViewer.setState({
+    levelMode: previousViewerState.levelMode,
+    hideLevelsAboveSelection: false,
+    selection: previousViewerState.selection,
+  })
 })
 
 describe('updateLevelPresentation', () => {
-  test('writes offset positions to the registry transform used by floorplan and selection', () => {
+  test('writes offset positions to the registry transform used by floorplan and selection', async () => {
     const { objects } = setupLevels([0, 1.25, 0])
     setLevelMode('stacked')
 
-    updateLevelPresentation(1 / 12)
+    await updateLevelPresentation(1 / 12)
 
     expect(objects.map((object) => object.position.y)).toEqual([0, 3.75, 6.25])
   })
 
-  test('keeps offset-aware positions in exploded and solo modes', () => {
+  test('keeps offset-aware positions in exploded and solo modes', async () => {
     const { levels, objects } = setupLevels([1, 0.5])
 
     setLevelMode('exploded')
-    updateLevelPresentation(1 / 12)
+    await updateLevelPresentation(1 / 12)
     expect(objects.map((object) => object.position.y)).toEqual([1, 9])
 
     objects.forEach((object) => {
       object.position.y = -100
     })
     setLevelMode('solo', levels[1]!.id)
-    updateLevelPresentation(1 / 12)
+    await updateLevelPresentation(1 / 12)
     expect(objects.map((object) => object.position.y)).toEqual([1, 4])
     expect(objects[0]!.visible).toBe(false)
     expect(objects[1]!.visible).toBe(true)
+  })
+
+  test('hides a level the author hid, outside solo too', async () => {
+    const { levels, objects } = setupLevels([0, 1])
+    hideLevel(levels[0]!.id)
+    setLevelMode('stacked')
+
+    await updateLevelPresentation(1 / 12)
+
+    expect(objects[0]!.visible).toBe(false)
+    expect(objects[1]!.visible).toBe(true)
+  })
+
+  test('keeps a level the author hid out of the solo shadow-caster branch', async () => {
+    const { levels, objects } = setupLevels([0, 1])
+    hideLevel(levels[1]!.id)
+    setLevelMode('solo', levels[0]!.id)
+
+    await updateLevelPresentation(1 / 12)
+
+    expect(objects[0]!.visible).toBe(true)
+    expect(objects[1]!.visible).toBe(false)
+  })
+})
+
+describe("the editor's level display", () => {
+  test('stacked, hiding every level above the selected one', async () => {
+    const { levels, objects } = setupLevels([0, 0, 0])
+    setLevelMode('stacked', levels[1]!.id)
+    useViewer.setState({ hideLevelsAboveSelection: true })
+    await updateLevelPresentation(1 / 12)
+    // Stacked positions, no exploded gap.
+    expect(objects.map((object) => object.position.y)).toEqual([0, 2.5, 5])
+    // Below and the selected level show; the one above casts shadows only.
+    expect(objects.map((object) => object.visible)).toEqual([true, true, true])
+    expect(objects[2]!.layers.isEnabled(0)).toBe(false)
+    expect(objects[0]!.layers.isEnabled(0)).toBe(true)
+    expect(objects[1]!.layers.isEnabled(0)).toBe(true)
+
+    // The top level selected: everything shows again.
+    setLevelMode('stacked', levels[2]!.id)
+    await updateLevelPresentation(1 / 12)
+    expect(objects.every((object) => object.visible && object.layers.isEnabled(0))).toBe(true)
+  })
+
+  test('a full-building capture shows the hidden upper levels for its render', async () => {
+    const { levels, objects } = setupLevels([0, 0])
+    setLevelMode('stacked', levels[0]!.id)
+    useViewer.setState({ hideLevelsAboveSelection: true })
+    await updateLevelPresentation(1 / 12)
+    expect(objects[1]!.layers.isEnabled(0)).toBe(false)
+    const restore = snapLevelsToTruePositions()
+    expect(objects[1]!.layers.isEnabled(0)).toBe(true)
+    restore()
+    expect(objects[1]!.layers.isEnabled(0)).toBe(false)
   })
 })
 
@@ -157,5 +188,19 @@ describe('snapLevelsToTruePositions', () => {
 
     expect(objects.map((object) => object.position.y)).toEqual([10, 20])
     expect(objects.map((object) => object.visible)).toEqual([false, true])
+  })
+
+  test('leaves a level the author hid hidden, matching the export', () => {
+    const { levels, objects } = setupLevels([0.5, 1.25])
+    hideLevel(levels[0]!.id)
+    objects[0]!.visible = true
+
+    const restore = snapLevelsToTruePositions()
+
+    expect(objects.map((object) => object.visible)).toEqual([false, true])
+
+    restore()
+
+    expect(objects.map((object) => object.visible)).toEqual([true, true])
   })
 })

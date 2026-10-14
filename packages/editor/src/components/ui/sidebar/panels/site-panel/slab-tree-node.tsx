@@ -1,9 +1,8 @@
-import { type AnyNodeId, type SlabNode, useScene } from '@pascal-app/core'
+import { type AnyNodeId, floorFootprintName, type SlabNode, useScene } from '@pascal-app/core'
 import { useViewer } from '@pascal-app/viewer'
 import Image from 'next/image'
 import { memo, useCallback, useState } from 'react'
 import { formatAreaLabel } from './../../../../../lib/measurements'
-import useEditor from './../../../../../store/use-editor'
 import { InlineRenameInput } from './inline-rename-input'
 import { focusTreeNode, handleTreeSelection, TreeNodeWrapper } from './tree-node'
 import { TreeNodeActions } from './tree-node-actions'
@@ -27,19 +26,22 @@ export const SlabTreeNode = memo(function SlabTreeNode({
   const setSelection = useViewer((state) => state.setSelection)
   const setHoveredId = useViewer((state) => state.setHoveredId)
   const unit = useViewer((state) => state.unit)
+  // A base plate is one footprint's "Floor & foundation": listed by the
+  // footprint's name ("Shared floor", "Lanai floor"), opening that panel.
+  const footprint = useScene((s) => {
+    const node = s.nodes[nodeId]
+    return node?.type === 'slab' && node.plateRole === 'base' ? floorFootprintName(s.nodes, node) : null
+  })
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation()
-      const handled = handleTreeSelection(
+      handleTreeSelection(
         e,
         nodeId,
         useViewer.getState().selection.selectedIds,
         setSelection,
       )
-      if (!handled && useEditor.getState().phase === 'furnish') {
-        useEditor.getState().setPhase('structure')
-      }
     },
     [nodeId, setSelection],
   )
@@ -63,13 +65,19 @@ export const SlabTreeNode = memo(function SlabTreeNode({
       isSelected={isSelected}
       isVisible={isVisible}
       label={
-        <InlineRenameInput
-          defaultName={defaultName}
-          isEditing={isEditing}
-          nodeId={nodeId}
-          onStartEditing={handleStartEditing}
-          onStopEditing={handleStopEditing}
-        />
+        footprint ? (
+          <span className="truncate" data-footprint-entry={nodeId}>
+            {footprint}
+          </span>
+        ) : (
+          <InlineRenameInput
+            defaultName={defaultName}
+            isEditing={isEditing}
+            nodeId={nodeId}
+            onStartEditing={handleStartEditing}
+            onStopEditing={handleStopEditing}
+          />
+        )
       }
       nodeId={nodeId}
       onClick={handleClick}

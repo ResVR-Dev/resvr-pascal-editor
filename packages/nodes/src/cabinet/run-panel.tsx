@@ -5,8 +5,9 @@ import type {
   AnyNodeId,
   CabinetModuleNode as CabinetModuleNodeType,
   CabinetNode as CabinetNodeType,
+  SceneApi,
 } from '@pascal-app/core'
-import { createSceneApi, resolveLevelId, useScene } from '@pascal-app/core'
+import { cascadeDirty, createSceneApi, resolveLevelId, useScene } from '@pascal-app/core'
 import {
   ActionButton,
   PanelSection,
@@ -19,6 +20,7 @@ import { useViewer } from '@pascal-app/viewer'
 import { Copy, Equal as EqualIcon, Plus, Trash } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
+import { planCabinetHostedEdit } from './hosted-resize'
 import {
   metadataForSelectedWidth,
   metadataWithPresetWidthDebt,
@@ -354,17 +356,32 @@ export function reflowRunModules({
   return true
 }
 
-export function updateCabinetRun({
-  modules,
-  node,
-  patch,
-}: {
+export function updateCabinetRun(args: {
   modules: CabinetModuleNodeType[]
   node: CabinetNodeType
   patch: Partial<CabinetNodeType>
 }) {
-  const scene = useScene.getState()
   const sceneApi = createSceneApi(useScene)
+  const updates = planCabinetHostedEdit(sceneApi, (staged) => writeCabinetRun(args, staged))
+  if (!updates) return
+  useScene.getState().updateNodes(updates.map(([id, data]) => ({ id, data })))
+  for (const id of cascadeDirty(args.node.id, { scene: sceneApi }))
+    useScene.getState().markDirty(id)
+}
+
+function writeCabinetRun(
+  {
+    modules,
+    node,
+    patch,
+  }: {
+    modules: CabinetModuleNodeType[]
+    node: CabinetNodeType
+    patch: Partial<CabinetNodeType>
+  },
+  sceneApi: SceneApi,
+) {
+  const nodes = sceneApi.nodes()
   const nextPatch = { ...patch }
   if (typeof nextPatch.carcassHeight === 'number') {
     const minModuleHeight = Math.max(
@@ -374,7 +391,7 @@ export function updateCabinetRun({
     nextPatch.carcassHeight = Math.max(nextPatch.carcassHeight, minModuleHeight)
   }
   const nextNode = { ...node, ...nextPatch }
-  scene.updateNode(node.id, nextPatch)
+  sceneApi.update(node.id, nextPatch)
 
   const shouldSyncDepth = RUN_DEPTH_PATCH_KEY in nextPatch
   const shouldSyncHeight = 'carcassHeight' in nextPatch
@@ -414,15 +431,15 @@ export function updateCabinetRun({
       if ('handlePosition' in nextPatch) modulePatch.handlePosition = nextNode.handlePosition
       if ('frontGap' in nextPatch) modulePatch.frontGap = nextNode.frontGap
     }
-    scene.updateNode(module.id, modulePatch)
+    sceneApi.update(module.id, modulePatch)
 
     if (shouldSyncModules) {
       const wallChild = wallChildOf(
         module,
-        scene.nodes as Record<string, CabinetEditableNode | undefined>,
+        nodes as Record<string, CabinetEditableNode | undefined>,
       )
       if (wallChild) {
-        scene.updateNode(wallChild.id, {
+        sceneApi.update(wallChild.id, {
           frontStyle: nextNode.frontStyle,
           frontOverlay: nextNode.frontOverlay,
           handleStyle: nextNode.handleStyle,
@@ -596,7 +613,7 @@ export function CabinetRunPanel({
         <div className="flex flex-col gap-2 px-1 pb-2">
           {sortedModules.map((module, index) => (
             <div
-              className="flex items-center justify-between rounded-lg border border-border/40 bg-[#252527] px-2 py-2"
+              className="flex items-center justify-between rounded-lg border border-border/40 bg-black/3 dark:bg-[#252527] px-2 py-2"
               key={module.id}
             >
               <button
@@ -613,7 +630,7 @@ export function CabinetRunPanel({
               </button>
               <button
                 aria-label={`Use ${module.name || `Module ${index + 1}`} as array source`}
-                className="mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/50 text-muted-foreground transition-colors hover:bg-white/8 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
+                className="mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/50 text-muted-foreground transition-colors hover:bg-black/5 dark:hover:bg-white/8 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
                 disabled={module.moduleKind === 'corner-filler'}
                 onClick={() => setArraySourceId(module.id as AnyNodeId)}
                 title={
@@ -626,7 +643,7 @@ export function CabinetRunPanel({
                 <Copy className="h-3.5 w-3.5" />
               </button>
               <button
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-red-500/20 bg-red-500/8 text-red-300 transition-colors hover:bg-red-500/15 hover:text-red-200 disabled:opacity-30"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-red-500/20 bg-red-500/8 text-red-700 dark:text-red-300 transition-colors hover:bg-red-500/15 hover:text-red-700 dark:hover:text-red-200 disabled:opacity-30"
                 disabled={modules.length <= 1}
                 onClick={() => deleteModule(module)}
                 type="button"
@@ -665,7 +682,7 @@ export function CabinetRunPanel({
 
       <PanelSection title="Duplicate along run">
         <div className="space-y-2 px-1 pb-2">
-          <div className="rounded-lg border border-border/40 bg-[#252527] px-2 py-2">
+          <div className="rounded-lg border border-border/40 bg-black/3 dark:bg-[#252527] px-2 py-2">
             <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
               Source module
             </div>

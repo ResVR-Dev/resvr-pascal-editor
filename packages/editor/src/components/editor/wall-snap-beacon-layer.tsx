@@ -5,11 +5,10 @@ import {
   type AnyNodeId,
   getWallCurveFrameAt,
   getWallCurveLength,
-  getWallPlaneTop,
   getWallThickness,
+  getWallTop,
   isCurvedWall,
   resolveLevelId,
-  resolveWallTop,
   sceneRegistry,
   spatialGridManager,
   useScene,
@@ -155,9 +154,14 @@ function getWallTopY(wall: WallNode, nodes: Readonly<Record<string, AnyNode>>) {
     wall.curveOffset ?? 0,
     wall.thickness,
     wall.supportSlabId,
+    undefined,
+    undefined,
+    wall.justification,
   )
-  const planeTop = getWallPlaneTop(wall, levelId, nodes as Record<string, AnyNode>)
-  return resolveWallTop(wall, planeTop, support.elevation) + WALL_TOP_HIGHLIGHT_LIFT
+  return (
+    getWallTop(wall, levelId, nodes as Record<string, AnyNode>, support.elevation) +
+    WALL_TOP_HIGHLIGHT_LIFT
+  )
 }
 
 function buildHighlightSegment(start: [number, number], end: [number, number]) {

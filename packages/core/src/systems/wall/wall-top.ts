@@ -9,17 +9,27 @@ import type { WallNode } from '../../schema/nodes/wall'
  */
 export const MIN_WALL_HEIGHT = 0.5
 
+export function wallFollowsStorey(
+  wall: Pick<WallNode, 'height' | 'supportSlabId'>,
+  authoredStoreyHeight: number | null,
+): boolean {
+  return (
+    wall.height == null ||
+    (authoredStoreyHeight !== null &&
+      wall.supportSlabId !== 'ground' &&
+      Math.abs(wall.height - authoredStoreyHeight) <= 1e-6)
+  )
+}
+
 /**
  * Wall-top inversion (vertical building model): a wall with no stored
  * `height` is plane-bound — its top sits at the storey plane (level-local
  * Y = the level's stored height), so a slab lifting the wall's base makes
  * the wall shorter, never taller, and no gap can open at the top of a
- * level. A wall WITH `height` is an explicit exception (half wall,
- * parapet) and keeps the legacy semantics: the top rides a raised elected
- * base (`electedBase + height`), while a zero or sunken slab base leaves
- * the top at `height` (the legacy negative-slab constraint). Explicit
- * ground-hosted walls are the terrain exception: `height` is always body
- * height, including below datum, so sculpting cannot stretch the wall.
+ * level. An explicit height equal to the authored storey height expresses the
+ * same storey-top intent, even when the resolved plane is clamped or lifted.
+ * Other explicit walls stand on their elected support; ground-hosted walls
+ * always retain their authored body height.
  *
  * Returns the top in level-local Y (same frame as `electedBase`).
  */
@@ -27,10 +37,10 @@ export function resolveWallTop(
   wall: Pick<WallNode, 'height' | 'supportSlabId'>,
   storeyHeight: number,
   electedBase: number,
+  authoredStoreyHeight: number | null = storeyHeight,
 ): number {
-  if (wall.height == null) return storeyHeight
-  if (wall.supportSlabId === 'ground') return electedBase + wall.height
-  return electedBase > 0 ? electedBase + wall.height : wall.height
+  if (wallFollowsStorey(wall, authoredStoreyHeight)) return storeyHeight
+  return electedBase + wall.height!
 }
 
 /**
@@ -51,6 +61,7 @@ export function resolveWallEffectiveHeight(
   wall: Pick<WallNode, 'height' | 'supportSlabId'>,
   storeyHeight: number,
   electedBase: number,
+  authoredStoreyHeight: number | null = storeyHeight,
 ): number {
-  return resolveWallTop(wall, storeyHeight, electedBase) - electedBase
+  return resolveWallTop(wall, storeyHeight, electedBase, authoredStoreyHeight) - electedBase
 }

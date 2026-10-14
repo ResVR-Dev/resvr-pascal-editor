@@ -26,8 +26,8 @@ import {
   DragBoundingBox,
   getFloorStackPreviewPosition,
   isMagneticSnapActive,
+  isTypingTarget,
   resolvePlanarCursorPosition,
-  snapFenceDraftPoint,
   stripPlacementMetadataFlags,
   triggerSFX,
   useAlignmentGuides,
@@ -38,6 +38,7 @@ import {
 import { useViewer } from '@pascal-app/viewer'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
+import { snapFenceDraftPoint } from '../fence/drafting'
 
 /** Figma-style alignment-snap threshold (meters), matching the other tools. */
 const ALIGNMENT_THRESHOLD_M = 0.08
@@ -474,9 +475,7 @@ export const MoveRoofTool: React.FC<{
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
-        return
-      }
+      if (isTypingTarget(event.target)) return
 
       const ROTATION_STEP = Math.PI / 4
       let rotationDelta = 0

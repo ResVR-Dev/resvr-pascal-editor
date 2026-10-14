@@ -4,6 +4,7 @@ import {
   type BuildingNode,
   createSceneApi,
   emitter,
+  floorPlatePaintRefusal,
   type GridEvent,
   getEffectiveRoofSurfaceMaterial,
   getEffectiveSegmentSurfaceMaterial,
@@ -11,6 +12,7 @@ import {
   getSelectableKinds,
   type ItemNode,
   isRegistrySelectable,
+  isSelectionHighlightEnabled,
   type NodeEvent,
   nodeRegistry,
   type RoofEvent,
@@ -18,6 +20,7 @@ import {
   type RoofSegmentEvent,
   type RoofSegmentNode,
   resolveLevelId,
+  type SlabNode,
   type StairEvent,
   type StairSegmentEvent,
   type StairSurfaceMaterialRole,
@@ -26,16 +29,22 @@ import {
   useRegistryVersion,
   useScene,
 } from '@pascal-app/core'
-
 import {
   createMaterial,
-  createMaterialFromPresetRef,
   getRoofMaterialArray,
+  registerMaterialCacheCleanup,
+  resolveMaterialRef,
   useViewer,
 } from '@pascal-app/viewer'
 import { useThree } from '@react-three/fiber'
 import { useCallback, useEffect, useRef } from 'react'
 import { type BufferGeometry, Color, type Material, type Mesh, type Object3D, Vector3 } from 'three'
+import {
+  hoverRoomFromHit,
+  resolveEditorRoomHit,
+  roomPickingEnabled,
+  useRoomRecords,
+} from '../../hooks/use-selected-room'
 import {
   canDirectMoveNode,
   canDirectRotateNode,
@@ -46,6 +55,11 @@ import {
   shouldStartDirectMoveDrag,
 } from '../../lib/direct-manipulation'
 import { createEditorApi } from '../../lib/editor-api'
+import {
+  isFootprintConstructionHit,
+  isRoomOwnedPlate,
+  roomOwnedPlateDrillTarget,
+} from '../../lib/floor-footprints'
 import { selectionEnabled } from '../../lib/interaction/scope'
 import {
   type ActivePaintMaterial,
@@ -54,28 +68,69 @@ import {
   hasActivePaintMaterial,
   resolveActivePaintMaterialFromSelection,
 } from '../../lib/material-paint'
+import { paintCommitRoute } from '../../lib/paint-commit-route'
+import { eyedropperMaterial, paintMaterialKey } from '../../lib/paint-eyedropper'
 import {
-  availablePaintScopes,
+  openingPartHidden,
+  paintPassesThrough,
+  wallHitInOpening,
+} from '../../lib/paint-pass-through'
+import {
+  combinePaintPreviews,
+  createPaintPreviewOwner,
+  type PaintPreviewCleanup,
+} from '../../lib/paint-preview-owner'
+import {
+  bindPaintPickHold,
+  isPaintErasing,
+  isPaintPicking,
+  paintPickReturnMode,
+  paintRegionModeActive,
+  usePaintRegionMode,
+} from '../../lib/paint-region-mode'
+import {
   commitPaintScopeFanout,
+  effectivePaintScope,
   nodeSlotRoles,
   type PaintHoverInfo,
+  paintHoverInfo,
+  paintScopeRole,
+  paintSurfaceLabel,
   resolvePaintScopeTargets,
   slotDisplayLabel,
   type WallPaintHit,
 } from '../../lib/paint-scope'
+import {
+  ceilingAffectedSurfaces,
+  mergePaintSurfaces,
+  paintSurfaceMeshes,
+  plateAffectedSurfaces,
+  platePreviewSurfaces,
+  usePaintOutline,
+} from '../../lib/plate-paint-affected'
 import { getHoveredRoofSegmentOutlineProxy } from '../../lib/roof-hover-outline-proxy'
+import { sameRoom } from '../../lib/room-selection'
+import { selectRoom, shouldInterceptRoom } from '../../lib/room-selection-commands'
+import { roomKeyForZone } from '../../lib/room-zone-routing'
 import {
   emitCanvasNodeSelection,
+  enterBuildingFromCanvas,
+  resolveCanvasBuildingId,
   resolveCanvasSelectionNode,
-  resolveNodeSelectionTarget,
   resolveSelectedIdsForNodeClick,
   type SelectionModifierKeys,
   selectionModifiersFromEvent,
   shouldPreserveSelectedRoofHostTarget,
 } from '../../lib/selection-routing'
 import { emitDeleteSFX, sfxEmitter } from '../../lib/sfx-bus'
+import {
+  cancelPendingZonePaint,
+  paintZoneMembership,
+  zoneAtLevelPoint,
+  zoneAtWorldPoint,
+} from '../../lib/units'
 import useDirectManipulationFeedback from '../../store/use-direct-manipulation-feedback'
-import useEditor, { type MaterialTargetRole } from './../../store/use-editor'
+import useEditor, { type MaterialTargetRole, type Phase } from './../../store/use-editor'
 import useInteractionScope, {
   getEditingHole,
   getMovingNode,
@@ -87,6 +142,7 @@ import { boxSelectHandled, suppressBoxSelectForPointer } from '../tools/select/b
 import { armGroupMove3d } from './group-move-3d'
 import { classifyParticipant } from './group-transform-shared'
 import { swallowNextClick } from './node-arrow-handles'
+import { RoomHighlight3D } from './room-highlight'
 import { setEditorThreeContext } from './three-context-bridge'
 
 const isNodeInCurrentLevel = (node: AnyNode): boolean => {
@@ -97,26 +153,6 @@ const isNodeInCurrentLevel = (node: AnyNode): boolean => {
   const nodeLevelId = resolveLevelId(node, useScene.getState().nodes)
   return nodeLevelId === currentLevelId
 }
-
-type SelectableNodeType =
-  | 'wall'
-  | 'fence'
-  | 'item'
-  | 'column'
-  | 'building'
-  | 'elevator'
-  | 'zone'
-  | 'slab'
-  | 'ceiling'
-  | 'roof'
-  | 'roof-segment'
-  | 'stair'
-  | 'stair-segment'
-  | 'spawn'
-  | 'window'
-  | 'door'
-
-type PaintPreviewCleanup = () => void
 
 type PaintInteraction = {
   key: string
@@ -130,7 +166,6 @@ type PaintInteraction = {
 }
 
 interface SelectionStrategy {
-  types: SelectableNodeType[]
   handleSelect: (
     node: AnyNode,
     nativeEvent?: any,
@@ -170,6 +205,18 @@ export const resolveBuildingId = (
     return level.parentId
   }
   return null
+}
+
+/**
+ * Furnishings: picking one leaves the room context (a sofa is not part of the
+ * room's shell). Door and window catalog items are openings, not furnishings.
+ */
+function isFurnishingNode(node: AnyNode): boolean {
+  if (node.type === 'item') {
+    const category = (node as ItemNode).asset.category
+    return category !== 'door' && category !== 'window'
+  }
+  return nodeRegistry.get(node.type)?.category === 'furnish'
 }
 
 function resolveStairMaterialTarget(
@@ -220,6 +267,14 @@ function resolveRoofMaterialTarget(
   if (normalY !== undefined && normalY < -0.35) return 'wall'
 
   return null
+}
+
+function isCeilingGridHit(event: NodeEvent): boolean {
+  return (
+    !event.viaHandle &&
+    event.node.type === 'ceiling' &&
+    getEventObject(event)?.name === 'ceiling-grid'
+  )
 }
 
 function getEventObject(event: NodeEvent): Object3D {
@@ -298,6 +353,31 @@ function meshSlotRoles(node: AnyNode): string[] {
 const roofSelectionWorldPoint = new Vector3()
 const wallPaintWorldPoint = new Vector3()
 
+const roomHitPoint = new Vector3()
+const roomHitXZ: [number, number] = [0, 0]
+export function roomForEvent(event: NodeEvent) {
+  if (event.node.type !== 'wall' && event.node.type !== 'slab' && event.node.type !== 'ceiling')
+    return null
+  // The floor edge band and the foundation belong to the footprint, not the
+  // room above: the plate takes the pick and opens Floor & foundation.
+  if (isFootprintConstructionHit(event.node, event.object)) return null
+  const levelId = resolveLevelId(event.node, useScene.getState().nodes)
+  if (!levelId) return null
+  if (event.viaHandle && event.node.type === 'ceiling') {
+    roomHitXZ[0] = event.position[0]
+    roomHitXZ[1] = event.position[2]
+    return resolveEditorRoomHit(event.node, levelId, roomHitXZ, '3d')
+  }
+  const level = sceneRegistry.nodes.get(levelId)
+  if (!level) return null
+  level.updateWorldMatrix(true, false)
+  roomHitPoint.set(...event.position)
+  level.worldToLocal(roomHitPoint)
+  roomHitXZ[0] = roomHitPoint.x
+  roomHitXZ[1] = roomHitPoint.z
+  return resolveEditorRoomHit(event.node, levelId, roomHitXZ, '3d')
+}
+
 function resolveWallPaintHit(event: NodeEvent): WallPaintHit | undefined {
   const wall = event.node
   if (wall.type !== 'wall') return undefined
@@ -320,7 +400,7 @@ function resolveWallPaintHit(event: NodeEvent): WallPaintHit | undefined {
   }
 }
 
-function resolveRoofSegmentSelectionTarget(event: NodeEvent): RoofSegmentNode | null {
+export function resolveRoofSegmentSelectionTarget(event: NodeEvent): RoofSegmentNode | null {
   const roof = event.node
   if (roof.type !== 'roof') return null
 
@@ -357,7 +437,11 @@ function resolveRoofSegmentSelectionTarget(event: NodeEvent): RoofSegmentNode | 
   return bestSegment?.node ?? firstSegment
 }
 
-function resolveSelectModeNodeTarget(event: NodeEvent): AnyNode {
+function resolveSelectModeNodeTarget(event: NodeEvent, drill = false): AnyNode {
+  if (!drill && event.node.type === 'stair-segment' && event.node.parentId) {
+    const parent = useScene.getState().nodes[event.node.parentId as AnyNodeId]
+    if (parent?.type === 'stair') return parent
+  }
   if (event.node.type === 'roof') {
     if (
       shouldPreserveSelectedRoofHostTarget({
@@ -409,6 +493,8 @@ function applyRoofPaintPreview(
     useViewer.getState().textures,
     useViewer.getState().colorPreset,
     useViewer.getState().sceneTheme,
+    null,
+    useScene.getState().materials,
   )
   if (!previewMaterial) return null
 
@@ -432,13 +518,12 @@ function applyRoofSegmentPaintPreview(
     ...node,
     ...buildRoofSegmentSurfaceMaterialPatch(node, role, material.material, material.materialPreset),
   }
+  const sceneMaterials = useScene.getState().materials
   const resolveSlot = (r: 'top' | 'edge' | 'wall'): Material | null => {
     const parentSpec = parent ? getEffectiveRoofSurfaceMaterial(parent, r) : undefined
     const spec = getEffectiveSegmentSurfaceMaterial(previewNode, r, parentSpec)
-    if (typeof spec.materialPreset === 'string') {
-      const resolved = createMaterialFromPresetRef(spec.materialPreset)
-      if (resolved) return resolved
-    }
+    const resolved = resolveMaterialRef(spec.materialPreset, sceneMaterials)
+    if (resolved) return resolved
     if (spec.material !== undefined) return createMaterial(spec.material)
     return null
   }
@@ -446,7 +531,9 @@ function applyRoofSegmentPaintPreview(
   const wall = resolveSlot('wall')
   const top = resolveSlot('top')
   if (!(edge || wall || top)) return null
-  const fallback = parent ? getRoofMaterialArray(parent) : null
+  const fallback = parent
+    ? getRoofMaterialArray(parent, undefined, undefined, undefined, undefined, null, sceneMaterials)
+    : null
   const fb = (n: number) => fallback?.[n] ?? null
   // Per-role only, then the parent's themed slot — matches the renderer so the
   // preview never bleeds a painted surface onto the segment's other surfaces.
@@ -493,7 +580,7 @@ const HIGHLIGHT_PROFILES = {
 } as const
 
 type HighlightKind = keyof typeof HIGHLIGHT_PROFILES
-type HoverHighlightMode = 'default' | 'delete' | 'paint-ready' | 'paint-disabled'
+type HoverHighlightMode = 'default' | 'delete' | 'paint-ready' | 'erase-ready' | 'paint-disabled'
 
 type HighlightableMaterial = Material & {
   color?: Color
@@ -600,9 +687,8 @@ const computeNextIds = (
   })
 }
 
-const SELECTION_STRATEGIES: Record<string, SelectionStrategy> = {
+const SELECTION_STRATEGIES: Record<Phase, SelectionStrategy> = {
   site: {
-    types: ['building'],
     handleSelect: (node) => {
       useViewer.getState().setSelection({ buildingId: (node as BuildingNode).id })
     },
@@ -612,24 +698,7 @@ const SELECTION_STRATEGIES: Record<string, SelectionStrategy> = {
     isValid: (node) => node.type === 'building',
   },
 
-  structure: {
-    types: [
-      'wall',
-      'fence',
-      'item',
-      'column',
-      'elevator',
-      'zone',
-      'slab',
-      'ceiling',
-      'roof',
-      'roof-segment',
-      'stair',
-      'stair-segment',
-      'spawn',
-      'window',
-      'door',
-    ],
+  building: {
     handleSelect: (node, nativeEvent, modifierKeys, baseSelectedIds) => {
       const { selection, setSelection } = useViewer.getState()
       const nodes = useScene.getState().nodes
@@ -651,10 +720,15 @@ const SELECTION_STRATEGIES: Record<string, SelectionStrategy> = {
         updates.buildingId = buildingId
       }
 
+      if (node.type === 'zone' && !useViewer.getState().focusedUnitId) {
+        const room = roomKeyForZone(node.id)
+        if (room) {
+          if (!sameRoom(useEditor.getState().room, room)) selectRoom(room)
+          return
+        }
+      }
       if (node.type === 'zone') {
         updates.zoneId = node.id
-        // Don't reset selectedIds in structure phase for zone, but if we changed level, it might reset them via hierarchy guard.
-        // Wait, the hierarchy guard resets zoneId if levelId changes. That's fine since we provide zoneId.
         setSelection(updates)
       } else {
         updates.selectedIds = computeNextIds(
@@ -668,21 +742,12 @@ const SELECTION_STRATEGIES: Record<string, SelectionStrategy> = {
       }
     },
     handleDeselect: () => {
-      const structureLayer = useEditor.getState().structureLayer
-      if (structureLayer === 'zones') {
-        useViewer.getState().setSelection({ zoneId: null })
-      } else {
-        useViewer.getState().setSelection({ selectedIds: [] })
-      }
+      useEditor.getState().clearRoom()
+      useViewer.getState().setSelection({ selectedIds: [], zoneId: null })
     },
     isValid: (node) => {
       if (!isNodeInCurrentLevel(node)) return false
-      const structureLayer = useEditor.getState().structureLayer
-      if (structureLayer === 'zones') {
-        if (node.type === 'zone') return true
-        return false
-      }
-      if (
+      return (
         node.type === 'wall' ||
         node.type === 'fence' ||
         node.type === 'column' ||
@@ -693,75 +758,36 @@ const SELECTION_STRATEGIES: Record<string, SelectionStrategy> = {
         node.type === 'roof-segment' ||
         node.type === 'stair' ||
         node.type === 'stair-segment' ||
-        node.type === 'spawn'
+        node.type === 'spawn' ||
+        node.type === 'window' ||
+        node.type === 'door' ||
+        node.type === 'item' ||
+        isRegistrySelectable(node.type)
       )
-        return true
-      if (node.type === 'item') {
-        return (
-          (node as ItemNode).asset.category === 'door' ||
-          (node as ItemNode).asset.category === 'window'
-        )
-      }
-      if (node.type === 'window' || node.type === 'door') return true
-
-      // Registry-driven: any kind whose NodeDefinition declares the
-      // `selectable` capability is also selectable in structure phase. Phase 4
-      // makes this the only path and deletes the hardcoded chain above.
-      if (isRegistrySelectable(node.type)) return true
-
-      return false
-    },
-  },
-
-  furnish: {
-    types: ['item'],
-    handleSelect: (node, nativeEvent, modifierKeys, baseSelectedIds) => {
-      const { selection, setSelection } = useViewer.getState()
-      const nodes = useScene.getState().nodes
-      const nodeLevelId = resolveLevelId(node, nodes)
-      const buildingId = resolveBuildingId(nodeLevelId, nodes)
-
-      const updates: any = {}
-      if (nodeLevelId !== 'default' && nodeLevelId !== selection.levelId) {
-        updates.levelId = nodeLevelId
-      }
-      if (buildingId && buildingId !== selection.buildingId) {
-        updates.buildingId = buildingId
-      }
-
-      updates.selectedIds = computeNextIds(
-        node,
-        selection.selectedIds,
-        nativeEvent,
-        modifierKeys,
-        baseSelectedIds,
-      )
-      setSelection(updates)
-    },
-    handleDeselect: () => {
-      useViewer.getState().setSelection({ selectedIds: [] })
-    },
-    isValid: (node) => {
-      if (!isNodeInCurrentLevel(node)) return false
-      // Item: door/window-category items belong to structure phase, not furnish.
-      if (node.type === 'item') {
-        const item = node as ItemNode
-        return item.asset.category !== 'door' && item.asset.category !== 'window'
-      }
-      // Registry-driven kinds with `category: 'furnish'` (shelf today,
-      // future furniture kinds): selectable in furnish phase if their
-      // definition declares the `selectable` capability. Without this
-      // branch, shelf clicks routed to furnish phase via resolveNodeSelectionTarget
-      // would be rejected here — single-click selection broken.
-      const def = nodeRegistry.get(node.type)
-      if (def && def.category === 'furnish' && def.capabilities.selectable) return true
-      return false
     },
   },
 }
 
 export const SelectionManager = () => {
-  const phase = useEditor((s) => s.phase)
+  const roomLevelId = useViewer((s) => s.selection.levelId)
+  useRoomRecords(roomLevelId)
+  useEffect(
+    () =>
+      useViewer.subscribe((state, previous) => {
+        if (
+          state.selection.levelId !== previous.selection.levelId ||
+          (state.selection.zoneId !== previous.selection.zoneId && state.selection.zoneId) ||
+          (state.selection.selectedIds !== previous.selection.selectedIds &&
+            state.selection.selectedIds.some((id) => {
+              const node = useScene.getState().nodes[id as AnyNodeId]
+              return node && isFurnishingNode(node)
+            }))
+        ) {
+          useEditor.getState().clearRoom()
+        }
+      }),
+    [],
+  )
   const mode = useEditor((s) => s.mode)
   // The canvas element — cursor styling must land here, not on `document.body`:
   // the editor wraps the canvas in a div with a custom `cursor: url(...)`, which
@@ -809,10 +835,23 @@ export const SelectionManager = () => {
     if (mode !== 'material-paint') return
     if (movingNode || isCurveReshape) return
 
+    const previewOwner = createPaintPreviewOwner()
     let activePreview: { key: string; restore: PaintPreviewCleanup } | null = null
     // The last hover event, replayed when the application scope cycles so the
     // preview + chip update under a stationary cursor (Shift fires no pointer move).
     let lastEnterEvent: NodeEvent | null = null
+    // Paint hover never stops a pointer event. R3F keeps a hover that stopped
+    // propagation stopping every later move over that object, which would pin
+    // the pointer to a door or a wall it should pass through where it opens
+    // (see `paint-pass-through`). So the nearest surface that takes a pointer
+    // event claims it; farther ones see the claim and stand down.
+    let claimedEvent: unknown = null
+    let hoveredNodeId: string | null = null
+    const claim = (event: NodeEvent) => {
+      claimedEvent = event.nativeEvent.nativeEvent
+    }
+    const claimedByNearer = (event: NodeEvent) =>
+      claimedEvent !== null && claimedEvent === event.nativeEvent.nativeEvent
 
     const clearActivePreview = () => {
       activePreview?.restore()
@@ -823,6 +862,7 @@ export const SelectionManager = () => {
       useEditor.getState().activePaintMaterial ??
       resolveActivePaintMaterialFromSelection({
         nodes: useScene.getState().nodes,
+        materials: useScene.getState().materials,
         selectedId:
           useViewer.getState().selection.selectedIds.length === 1
             ? (useViewer.getState().selection.selectedIds[0] ?? null)
@@ -830,8 +870,50 @@ export const SelectionManager = () => {
         selectedMaterialTarget: useEditor.getState().selectedMaterialTarget,
       })
 
-    const getPaintInteraction = (event: NodeEvent): PaintInteraction | null => {
-      const eraser = useEditor.getState().paintEraser
+    // The eyedropper: the hover shows what a click would take (the cursor
+    // swatch), the click takes it and returns to the sub-mode it came from.
+    const pickInteraction = (
+      node: AnyNode,
+      role: string | null,
+      event: NodeEvent,
+      materialIndex: number | null,
+    ): PaintInteraction => {
+      const picked = role
+        ? eyedropperMaterial({
+            node,
+            role,
+            nodes: useScene.getState().nodes,
+            materials: useScene.getState().materials,
+            hitObject: getEventObject(event),
+            materialIndex,
+          })
+        : null
+      return {
+        key: `pick:${node.id}:${role ?? 'none'}:${paintMaterialKey(picked)}`,
+        hoveredId: node.id as AnyNodeId,
+        hoverMode: picked ? 'paint-ready' : 'paint-disabled',
+        paintHover:
+          picked && role
+            ? { scopes: ['single'], slotLabel: paintSurfaceLabel(node, role), nodeNoun: node.type }
+            : null,
+        apply: picked
+          ? () => useEditor.getState().armMaterialPaint(picked, paintPickReturnMode())
+          : null,
+        preview: () => {
+          usePaintRegionMode.setState({ picked })
+          return () => {
+            if (usePaintRegionMode.getState().picked === picked)
+              usePaintRegionMode.setState({ picked: null })
+          }
+        },
+      }
+    }
+
+    const resolvePaintInteraction = (event: NodeEvent): PaintInteraction | null => {
+      // A region sub-mode draws its own region before painting; the
+      // whole-surface hover and click stand down.
+      if (paintRegionModeActive('material-paint')) return null
+      const eraser = isPaintErasing()
       const activePaintMaterial = resolveActivePaintMaterial()
       const node = event.node
 
@@ -873,6 +955,25 @@ export const SelectionManager = () => {
           hitObject: getEventObject(event),
           ray: event.nativeEvent.ray,
         })
+        // Not claiming the hover lets the pointer event reach the surface behind:
+        // an empty door or window, or a wall's collision hit in one of its holes.
+        if (
+          paintPassesThrough(node, role) ||
+          ((node.type === 'door' || node.type === 'window') &&
+            openingPartHidden(
+              getRegisteredNodeObject(node.id),
+              event.nativeEvent.ray,
+              event.nativeEvent.intersections,
+            )) ||
+          (node.type === 'wall' &&
+            wallHitInOpening(
+              getRegisteredNodeObject(node.id),
+              event.nativeEvent.ray,
+              event.nativeEvent.distance,
+            ))
+        )
+          return null
+        if (isPaintPicking()) return pickInteraction(node, role, event, materialIndex ?? null)
         const compatible = role !== null && paintEnabled
         // Derive the node's slots (declared, else mesh tags) once — drives both
         // the chip's available scopes and the whole-object fan-out.
@@ -881,7 +982,13 @@ export const SelectionManager = () => {
         // / all matching / room). The scope is part of the key so cycling it
         // (Shift) re-keys the interaction → the preview re-applies for the new
         // spread instead of being deduped to the single-surface preview.
-        const scope = useEditor.getState().paintScope
+        const hover = compatible && role ? paintHoverInfo(node, role, slotRoles) : null
+        // A scope carried over from another surface paints what the chip
+        // shows for this one: the narrowest when it isn't offered here.
+        const scope = effectivePaintScope(
+          useEditor.getState().paintScope,
+          hover?.scopes ?? ['single'],
+        )
         const wallHit = resolveWallPaintHit(event)
         const scopeTargets =
           compatible && role
@@ -895,30 +1002,44 @@ export const SelectionManager = () => {
                 wallHit,
               })
             : []
-        const scopeTargetKey = scopeTargets
+        // What the click changes on floor plates, fallbacks included (a room's
+        // floor carries its unpainted steps): the outline. The preview draws
+        // the same set, each follower through the surface it follows.
+        const scopeRole = compatible && role ? paintScopeRole(node, role, scope) : null
+        const sceneNodes = useScene.getState().nodes
+        const affected = scopeRole
+          ? (plateAffectedSurfaces(sceneNodes, node, scopeRole, { erasing: eraser }) ??
+            ceilingAffectedSurfaces(node, scopeRole))
+          : null
+        const previewTargets = mergePaintSurfaces(
+          scopeTargets,
+          scopeRole
+            ? (platePreviewSurfaces(sceneNodes, node, scopeRole) ??
+                ceilingAffectedSurfaces(node, scopeRole))
+            : null,
+        )
+        const scopeTargetKey = previewTargets
           .map((target) => `${target.nodeId}:${target.role}`)
           .sort()
           .join(',')
         return {
           key: `${node.type}:${node.id}:${role ?? 'unsupported'}:${eraser ? 'erase' : 'paint'}:${scope}:${scopeTargetKey}`,
           hoveredId: node.id as AnyNodeId,
-          hoverMode: compatible ? 'paint-ready' : 'paint-disabled',
-          paintHover:
-            compatible && role
-              ? {
-                  scopes: availablePaintScopes({ node, slotRoles }),
-                  slotLabel: slotDisplayLabel(node, role),
-                  nodeNoun: node.type,
-                }
-              : null,
+          hoverMode: compatible ? (eraser ? 'erase-ready' : 'paint-ready') : 'paint-disabled',
+          paintHover: hover,
           apply:
             compatible && role
               ? () => {
+                  // A surface with nothing of its own to paint (a footprint's
+                  // top where no room stands) says so instead of painting.
+                  const refusal = floorPlatePaintRefusal(useScene.getState().nodes, node, role)
+                  usePaintRegionMode.getState().setNotice(refusal?.message ?? null)
+                  if (refusal) return
                   // Spread targets are all the same slot-model kind, so one
-                  // batched commit writes them in a single undo step; the
-                  // single-surface case keeps the kind's own commit (covers
-                  // non-slot kinds too).
-                  if (scopeTargets.length > 1) {
+                  // batched commit writes them in a single undo step; only
+                  // the hovered surface itself keeps the kind's own commit
+                  // (covers non-slot kinds too) — see `paintCommitRoute`.
+                  if (paintCommitRoute(scopeTargets, node.id, role) === 'fanout') {
                     commitPaintScopeFanout(
                       scopeTargets,
                       paintSpec.material,
@@ -952,28 +1073,36 @@ export const SelectionManager = () => {
                   // hovered surface. Each target is the same kind, so its own
                   // paint capability builds the preview; restores combine.
                   const restores: PaintPreviewCleanup[] = []
-                  const sceneNodes = useScene.getState().nodes
-                  for (const target of scopeTargets) {
-                    const targetNode = sceneNodes[target.nodeId]
-                    const targetRoot = getRegisteredNodeObject(target.nodeId)
-                    const targetCap = targetNode
-                      ? nodeRegistry.get(targetNode.type)?.capabilities?.paint
-                      : null
-                    if (!(targetNode && targetRoot && targetCap)) continue
-                    const restore = targetCap.applyPreview({
-                      node: targetNode,
-                      role: target.role,
-                      material: paintSpec.material,
-                      materialPreset: paintSpec.materialPreset,
-                      root: targetRoot,
-                    })
-                    if (restore) restores.push(restore)
+                  const liveNodes = useScene.getState().nodes
+                  if (affected) {
+                    usePaintOutline.setState({ surfaces: affected })
+                    restores.push(() => usePaintOutline.setState({ surfaces: null }))
+                  }
+                  try {
+                    for (const target of previewTargets) {
+                      const targetNode = liveNodes[target.nodeId]
+                      const targetRoot = getRegisteredNodeObject(target.nodeId)
+                      const targetCap = targetNode
+                        ? nodeRegistry.get(targetNode.type)?.capabilities?.paint
+                        : null
+                      if (!(targetNode && targetRoot && targetCap)) continue
+                      const restore = targetCap.applyPreview({
+                        node: targetNode,
+                        nodes: liveNodes,
+                        materials: useScene.getState().materials,
+                        role: target.role,
+                        material: paintSpec.material,
+                        materialPreset: paintSpec.materialPreset,
+                        root: targetRoot,
+                      })
+                      if (restore) restores.push(restore)
+                    }
+                  } catch (error) {
+                    combinePaintPreviews(restores)()
+                    throw error
                   }
                   if (restores.length === 0) return null
-                  return () => {
-                    for (let index = restores.length - 1; index >= 0; index -= 1)
-                      restores[index]?.()
-                  }
+                  return combinePaintPreviews(restores)
                 }
               : () => previewCursor('not-allowed'),
         }
@@ -990,6 +1119,8 @@ export const SelectionManager = () => {
         if (roofNode?.type !== 'roof') return null
 
         const role = resolveRoofMaterialTarget(event as RoofEvent | RoofSegmentEvent)
+        if (isPaintPicking())
+          return pickInteraction(isSegmentHit ? node : roofNode, role, event, null)
         const compatible = role !== null && paintEnabled
         // Painting directly on a segment (only possible in segment edit
         // mode, where the per-segment mesh is visible) writes to the
@@ -1001,7 +1132,7 @@ export const SelectionManager = () => {
             segmentTarget ? segmentTarget.id : roofNode.id
           }:${role ?? 'unsupported'}:${eraser ? 'erase' : 'paint'}`,
           hoveredId: (segmentTarget ? segmentTarget.id : roofNode.id) as AnyNodeId,
-          hoverMode: compatible ? 'paint-ready' : 'paint-disabled',
+          hoverMode: compatible ? (eraser ? 'erase-ready' : 'paint-ready') : 'paint-disabled',
           // Roof isn't on the slot model (role-specific fields, custom commit),
           // so it offers only the single surface — but still labels it.
           paintHover:
@@ -1073,18 +1204,24 @@ export const SelectionManager = () => {
       return null
     }
 
+    const getPaintInteraction = (event: NodeEvent) =>
+      previewOwner.wrap(resolvePaintInteraction(event))
+
     const onEnter = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
       // A host-driven drag (handle resize/rotate) sets `inputDragging`.
       // useNodeEvents now emits hover events during such a drag so surface
       // move tools keep tracking the cursor — but paint preview must not fire
       // mid-drag, so gate on `inputDragging` here too.
       if (boxSelectHandled || useViewer.getState().inputDragging) return
+      if (claimedByNearer(event)) return
 
       const interaction = getPaintInteraction(event)
       if (!interaction) return
 
-      event.stopPropagation()
+      claim(event)
       lastEnterEvent = event
+      hoveredNodeId = interaction.hoveredId
 
       // Drive the paint HUD off this hover: the interaction carries the scopes +
       // labels for the painted surface (`null` when it isn't paintable — no
@@ -1106,12 +1243,17 @@ export const SelectionManager = () => {
     }
 
     const onLeave = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
       const interaction = getPaintInteraction(event)
-      if (!interaction) return
+      // A surface behind the hovered one (under an opening that never stops
+      // the pointer) leaving says nothing about the hover.
+      if (!interaction || interaction.hoveredId !== hoveredNodeId) return
 
       // Leaving any surface → the HUD shows the "hover a surface" hint again.
+      hoveredNodeId = null
       lastEnterEvent = null
       useEditor.getState().setPaintHover(null)
+      usePaintOutline.setState({ surfaces: null })
 
       if (activePreview?.key !== interaction.key) {
         return
@@ -1125,17 +1267,22 @@ export const SelectionManager = () => {
     }
 
     const onClick = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
       if (boxSelectHandled) return
+      if (claimedByNearer(event)) return
 
       const interaction = getPaintInteraction(event)
       if (!interaction) return
 
-      event.stopPropagation()
+      claim(event)
 
       if (!interaction.apply) {
         return
       }
 
+      // Picking switches sub-mode synchronously and replays the hover, replacing
+      // the event claim. Consume this click before a farther hit can paint.
+      if (isPaintPicking()) event.stopPropagation()
       interaction.apply()
       sfxEmitter.emit('sfx:paint-apply')
       if (activePreview?.key === interaction.key) {
@@ -1185,11 +1332,22 @@ export const SelectionManager = () => {
     const unsubscribePaintScope = useEditor.subscribe((state, prev) => {
       if (state.paintScope === prev.paintScope || !lastEnterEvent) return
       clearActivePreview()
+      claimedEvent = null
+      onEnter(lastEnterEvent)
+    })
+    const releasePickHold = bindPaintPickHold(window)
+    // So does switching the sub-mode (the eyedropper held on Alt, a mode icon).
+    const unsubscribePaintMode = usePaintRegionMode.subscribe((state, prev) => {
+      if (state.mode === prev.mode || !lastEnterEvent) return
+      clearActivePreview()
+      claimedEvent = null
       onEnter(lastEnterEvent)
     })
 
     return () => {
       unsubscribePaintScope()
+      unsubscribePaintMode()
+      releasePickHold()
       for (const type of subscribedKinds) {
         emitter.off(`${type}:enter` as any, onEnter as any)
         emitter.off(`${type}:move` as any, onEnter as any)
@@ -1198,6 +1356,7 @@ export const SelectionManager = () => {
       }
       clearActivePreview()
       useViewer.setState({ hoveredId: null })
+      usePaintOutline.setState({ surfaces: null })
       setHoverHighlightMode('default')
       useEditor.getState().setPaintHover(null)
     }
@@ -1243,9 +1402,20 @@ export const SelectionManager = () => {
     if (movingNode || isCurveReshape) return
 
     const onPointerDown = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
       if (!selectionEnabled(useInteractionScope.getState().scope)) return
+      if (useEditor.getState().phase === 'site') return
       const pointer = pointerEventFromNodeEvent(event)
-      if (pointer.button !== 0) return
+      if (pointer.button !== 0 || pointer.altKey) return
+      if (
+        roomPickingEnabled() &&
+        shouldInterceptRoom(
+          roomForEvent(event),
+          selectionModifiersFromEvent(pointer),
+          event.node.id,
+        )
+      )
+        return
       const handleOwnsPointer = pointerEventHitsEditorHandle(event.nativeEvent)
 
       // Plain press on a transformable member of a multi-selection arms the
@@ -1560,6 +1730,7 @@ export const SelectionManager = () => {
     if (movingNode || isCurveReshape) return
 
     const onClick = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
       // Skip if box-select just completed (drag ended over a node)
       if (boxSelectHandled) return
 
@@ -1571,8 +1742,11 @@ export const SelectionManager = () => {
       // body click so only the reshape tool handles the release. (Scoped to
       // `endpoint`: hole-edit relies on node clicks to exit, just below.)
       const activeScope = useInteractionScope.getState().scope
-      if (activeScope.kind === 'mesh-editing') return
-      if (activeScope.kind === 'reshaping' && activeScope.reshape === 'endpoint') return
+      if (
+        !selectionEnabled(activeScope) &&
+        !(activeScope.kind === 'reshaping' && activeScope.reshape === 'hole')
+      )
+        return
 
       if (dispatchSceneAction(event.node, getEventObject(event))) {
         event.stopPropagation()
@@ -1589,44 +1763,61 @@ export const SelectionManager = () => {
         selectedIds: useViewer.getState().selection.selectedIds,
       })
 
-      // A ceiling is selectable only through its corner handles, never via
-      // the `ceiling-grid` body mesh. When the grid is revealed (ceiling
-      // selected, or an item placed beneath it) a top-down click hits the
-      // grid first; selecting the ceiling there both re-selects it as a
-      // no-op and stops propagation, blocking the hosted item below. By
-      // ignoring non-handle ceiling clicks (without stopping propagation)
-      // the click falls through to the item underneath.
-      if (node.type === 'ceiling' && !event.viaHandle) return
-
-      let currentPhase = useEditor.getState().phase
-      let currentStructureLayer = useEditor.getState().structureLayer
-      const selectedIdsBeforeRouting = useViewer.getState().selection.selectedIds
-
-      // Auto-switch between zones, structure, and furnish when clicking elements on the same level.
-      // Also auto-switch from site phase when clicking structural/furnish elements (e.g. 2D floorplan).
-      if (currentPhase === 'structure' || currentPhase === 'furnish' || currentPhase === 'site') {
-        if (isNodeInCurrentLevel(node)) {
-          const target = resolveNodeSelectionTarget(node)
-          if (target) {
-            if (target.phase !== currentPhase) {
-              useEditor.getState().setPhase(target.phase)
-              currentPhase = target.phase
-            }
-
-            if (
-              target.phase === 'structure' &&
-              target.structureLayer &&
-              target.structureLayer !== currentStructureLayer
-            ) {
-              useEditor.getState().setStructureLayer(target.structureLayer)
-              currentStructureLayer = target.structureLayer
-            }
-          }
+      // Unit focus turns clicks inside a zone into the paint gesture:
+      // membership toggles, the zone stays unselected, focus stays.
+      const focusedUnitId = useViewer.getState().focusedUnitId
+      if (focusedUnitId) {
+        const zone =
+          node.type === 'zone'
+            ? node
+            : zoneAtWorldPoint(event.position[0], event.position[2], event.position[1])
+        if (zone) {
+          event.stopPropagation()
+          clickHandledRef.current = true
+          setTimeout(() => {
+            clickHandledRef.current = false
+          }, 50)
+          paintZoneMembership(focusedUnitId, zone.id)
+          return
         }
       }
 
-      const activeStrategy = SELECTION_STRATEGIES[currentPhase]
-      if (activeStrategy?.isValid(node)) {
+      // From site the house is one thing: a hit anywhere on it picks its
+      // building and goes inside, where the next click picks a room or element.
+      if (useEditor.getState().phase === 'site') {
+        if (!enterBuildingFromCanvas(node)) return
+        event.stopPropagation()
+        clickHandledRef.current = true
+        setTimeout(() => {
+          clickHandledRef.current = false
+        }, 50)
+        return
+      }
+
+      if (isNodeInCurrentLevel(node) && roomPickingEnabled()) {
+        const room = roomForEvent(event)
+        if (
+          room &&
+          shouldInterceptRoom(
+            room,
+            selectionModifiersFromEvent(event.nativeEvent, modifierKeysRef.current),
+            node.id,
+          )
+        ) {
+          event.stopPropagation()
+          clickHandledRef.current = true
+          setTimeout(() => {
+            clickHandledRef.current = false
+          }, 50)
+          selectRoom(room)
+          return
+        }
+        useEditor.getState().setHoveredRoom(null)
+      }
+
+      const selectedIdsBeforeRouting = useViewer.getState().selection.selectedIds
+      const activeStrategy = SELECTION_STRATEGIES.building
+      if (activeStrategy.isValid(node)) {
         event.stopPropagation()
         clickHandledRef.current = true
         // Reset the handled flag after a short delay so the grid:click that the
@@ -1639,13 +1830,22 @@ export const SelectionManager = () => {
           clickHandledRef.current = false
         }, 50)
 
-        let nodeToSelect = node
-        if (node.type === 'stair-segment' && node.parentId) {
-          const parentNode = useScene.getState().nodes[node.parentId as AnyNodeId]
-          if (parentNode && parentNode.type === 'stair') {
-            nodeToSelect = parentNode
+        // Room first: a raised or sunken room's plate and a mezzanine's plate
+        // belong to their room, never selected on their own. Past the room (the
+        // drill click, or Alt) a raised or sunken room continues to the
+        // footprint floor it stands on, like a ground-level room; a mezzanine
+        // stays on its mezzanine.
+        let footprint: SlabNode | null = null
+        if (roomPickingEnabled() && isRoomOwnedPlate(node)) {
+          footprint = roomOwnedPlateDrillTarget(useScene.getState().nodes, node as SlabNode)
+          if (!footprint) {
+            const hit = roomForEvent(event)
+            if (hit) selectRoom(hit)
+            return
           }
         }
+
+        let nodeToSelect: AnyNode = footprint ?? node
         nodeToSelect = resolveCanvasSelectionNode({
           node: nodeToSelect,
           nodes: useScene.getState().nodes,
@@ -1667,13 +1867,15 @@ export const SelectionManager = () => {
         // Move button. The first (selecting) click can't hit this because the
         // node isn't yet in `selectedIdsBeforeRouting`.
         const nativeEvent = event.nativeEvent
-        const hasModifier = nativeEvent.shiftKey || isCommandModifier(nativeEvent)
+        const hasModifier =
+          nativeEvent.altKey || nativeEvent.shiftKey || isCommandModifier(nativeEvent)
         const isAlreadySole =
           selectedIdsBeforeRouting.length === 1 && selectedIdsBeforeRouting[0] === nodeToSelect.id
         if (
           useEditor.getState().mode !== 'delete' &&
           !hasModifier &&
           isAlreadySole &&
+          !expandSessionSelectionForNode(nodeToSelect.id) &&
           !getMovingNode() &&
           canDirectMoveNode(nodeToSelect)
         ) {
@@ -1698,7 +1900,7 @@ export const SelectionManager = () => {
         // `capabilities.paint` route through this entry — wall,
         // chimney, dormer use it today. The legacy stair / roof /
         // single-surface arms below stay until they migrate too.
-        if (nodeToSelect.type === node.type) {
+        if (!footprint && nodeToSelect.type === node.type) {
           const paintCap = nodeRegistry.get(node.type)?.capabilities?.paint
           if (paintCap) {
             const materialIndex = getIntersectionMaterialIndex(
@@ -1795,19 +1997,23 @@ export const SelectionManager = () => {
     const onGridClick = (event: GridEvent) => {
       if (clickHandledRef.current) return
       if (boxSelectHandled) return
-      if (useInteractionScope.getState().scope.kind === 'mesh-editing') return
+      if (!selectionEnabled(useInteractionScope.getState().scope)) return
       const nativeEvent = event.nativeEvent
       if (nativeEvent?.metaKey || nativeEvent?.ctrlKey || nativeEvent?.shiftKey) return
-      const { phase, structureLayer } = useEditor.getState()
-      const activeStrategy = SELECTION_STRATEGIES[phase]
-      if (activeStrategy) activeStrategy.handleDeselect()
-      useEditor.getState().setSelectedMaterialTarget(null)
-
-      // When deselecting from zone mode, return to structure select
-      if (phase === 'structure' && structureLayer === 'zones') {
-        useEditor.getState().setStructureLayer('elements')
-        useEditor.getState().setMode('select')
+      // Unit focus: a ground click inside a zone paints it; elsewhere it
+      // leaves focus and the unit selection alone.
+      const focusedUnitId = useViewer.getState().focusedUnitId
+      if (focusedUnitId) {
+        const zone = zoneAtLevelPoint(
+          event.localPosition[0],
+          event.localPosition[2],
+          event.localPosition[1],
+        )
+        if (zone) paintZoneMembership(focusedUnitId, zone.id)
+        return
       }
+      SELECTION_STRATEGIES[useEditor.getState().phase].handleDeselect()
+      useEditor.getState().setSelectedMaterialTarget(null)
     }
     emitter.on('grid:click', onGridClick)
 
@@ -1819,7 +2025,7 @@ export const SelectionManager = () => {
     }
   }, [isCurveReshape, mode, movingNode, registryVersion])
 
-  // Global double-click handler for auto-switching phases and cross-phase hover
+  // Hover and double-click
   useEffect(() => {
     // re-subscribe when plugin kinds register after mount (async plugin load)
     void registryVersion
@@ -1827,115 +2033,113 @@ export const SelectionManager = () => {
     if (movingNode || isCurveReshape) return
 
     const onEnter = (event: NodeEvent) => {
-      if (useInteractionScope.getState().scope.kind === 'mesh-editing') return
+      if (isCeilingGridHit(event)) return
+      if (!selectionEnabled(useInteractionScope.getState().scope)) return
       // A host-driven drag (handle resize/rotate, box-select) sets
       // `inputDragging`. useNodeEvents still emits hover events during it so
       // surface move tools keep tracking — but the select-hover outline must
       // stay put, so don't repaint under the cursor mid-drag.
       if (useViewer.getState().inputDragging) return
+      // An editor handle anywhere along the ray owns the pointer — it takes the
+      // press (handles draw on top of walls), so it takes the hover too: no
+      // stopPropagation, so the handle behind the wall still hears its enter.
+      if (pointerEventHitsEditorHandle(event.nativeEvent)) {
+        clearSelectHover(event)
+        return
+      }
       const node = resolveCanvasSelectionNode({
         node: resolveSelectModeNodeTarget(event),
         nodes: useScene.getState().nodes,
         selectedIds: useViewer.getState().selection.selectedIds,
       })
-      const currentPhase = useEditor.getState().phase
-
-      // Ignore site/building if we are already inside a building
-      if (node.type === 'building' || node.type === 'site') {
-        if (currentPhase === 'structure' || currentPhase === 'furnish') {
-          return
-        }
+      // From site the click picks the whole building, so the hover shows it.
+      if (useEditor.getState().phase === 'site') {
+        const buildingId = resolveCanvasBuildingId(node, useScene.getState().nodes)
+        if (!buildingId) return
+        event.stopPropagation()
+        useViewer.getState().setHoveredId(buildingId as AnyNodeId)
+        return
       }
 
-      // Ignore zones unless specifically in zones layer
-      if (node.type === 'zone') {
-        if (currentPhase !== 'structure' || useEditor.getState().structureLayer !== 'zones') {
-          return
-        }
-      }
-
-      // Check level constraint for interior nodes
-      if (currentPhase === 'structure' || currentPhase === 'furnish') {
-        if (!isNodeInCurrentLevel(node)) return
-      }
+      if (node.type === 'building' || node.type === 'site') return
+      // Rooms hover through their walls and floors; a zone's own volume never does.
+      if (node.type === 'zone') return
+      if (!isNodeInCurrentLevel(node)) return
 
       event.stopPropagation()
-      useViewer.setState({ hoveredId: node.id })
+      if (
+        roomPickingEnabled() &&
+        hoverRoomFromHit(
+          roomForEvent(event),
+          selectionModifiersFromEvent(event.nativeEvent, modifierKeysRef.current),
+          node.id,
+        )
+      )
+        return
+      useViewer.getState().setHoveredId(node.id)
     }
 
-    const onLeave = (event: NodeEvent) => {
+    const clearSelectHover = (event: NodeEvent) => {
+      useEditor.getState().setHoveredRoom(null)
       if (useViewer.getState().inputDragging) return
-      const nodeId = resolveCanvasSelectionNode({
+      const nodes = useScene.getState().nodes
+      const node = resolveCanvasSelectionNode({
         node: resolveSelectModeNodeTarget(event),
-        nodes: useScene.getState().nodes,
+        nodes,
         selectedIds: useViewer.getState().selection.selectedIds,
-      })?.id
+      })
+      const nodeId =
+        useEditor.getState().phase === 'site' ? resolveCanvasBuildingId(node, nodes) : node.id
       if (nodeId && useViewer.getState().hoveredId === nodeId) {
         useViewer.setState({ hoveredId: null })
       }
     }
 
+    const onLeave = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
+      clearSelectHover(event)
+    }
+
     const onDoubleClick = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
       if (useInteractionScope.getState().scope.kind === 'mesh-editing') return
-      let node = resolveCanvasSelectionNode({
-        node: resolveSelectModeNodeTarget(event),
+      const node = resolveCanvasSelectionNode({
+        node: resolveSelectModeNodeTarget(event, true),
         nodes: useScene.getState().nodes,
         selectedIds: useViewer.getState().selection.selectedIds,
       })
+      if (useEditor.getState().phase !== 'building' || !isNodeInCurrentLevel(node)) return
 
-      const currentPhase = useEditor.getState().phase
-
-      const selectedIdsBeforeRouting = useViewer.getState().selection.selectedIds
-      const target = resolveNodeSelectionTarget(node)
-      let targetPhase: 'site' | 'structure' | 'furnish' | null = target?.phase ?? null
-      let targetStructureLayer = target?.structureLayer
-      let forceSelect = false
-
-      if (node.type === 'building' || node.type === 'site') {
-        if (currentPhase === 'structure' || currentPhase === 'furnish') {
-          return // Ignore building/site double clicks if we are already inside a building
-        }
-        if (node.type === 'building') {
-          targetPhase = 'structure'
-          targetStructureLayer = 'elements'
-        }
-      } else {
-        if (node.type === 'roof-segment' && currentPhase === 'structure') {
-          forceSelect = true // allow double click to dive into roof-segment even if already in structure phase
-        }
-        if (node.type === 'stair-segment' && currentPhase === 'structure') {
-          forceSelect = true // allow double click to dive into stair-segment even if already in structure phase
-        }
-      }
-
-      if (node.type === 'zone') {
-        return
-      }
-
-      if ((targetPhase && targetPhase !== useEditor.getState().phase) || forceSelect) {
-        event.stopPropagation()
-
-        if (targetPhase && targetPhase !== useEditor.getState().phase) {
-          useEditor.getState().setPhase(targetPhase)
-        }
-
-        if (
-          targetPhase === 'structure' &&
-          targetStructureLayer &&
-          targetStructureLayer !== useEditor.getState().structureLayer
-        ) {
-          useEditor.getState().setStructureLayer(targetStructureLayer)
-        }
-
-        const strategy = SELECTION_STRATEGIES[targetPhase || currentPhase]
-        if (strategy) {
-          strategy.handleSelect(
-            node,
+      // While a unit is focused a double-click inside a zone selects that
+      // zone (focus stays); the two clicks before it cancel each other's paint.
+      if (useViewer.getState().focusedUnitId) {
+        const zone =
+          node.type === 'zone'
+            ? node
+            : zoneAtWorldPoint(event.position[0], event.position[2], event.position[1])
+        if (zone) {
+          event.stopPropagation()
+          cancelPendingZonePaint(zone.id)
+          SELECTION_STRATEGIES.building.handleSelect(
+            zone,
             event.nativeEvent,
             modifierKeysRef.current,
-            selectedIdsBeforeRouting,
+            [],
           )
+          return
         }
+      }
+
+      // A single click selects the whole roof or stair; the double-click dives
+      // into the segment under the cursor.
+      if (node.type === 'roof-segment' || node.type === 'stair-segment') {
+        event.stopPropagation()
+        SELECTION_STRATEGIES.building.handleSelect(
+          node,
+          event.nativeEvent,
+          modifierKeysRef.current,
+          useViewer.getState().selection.selectedIds,
+        )
       }
     }
 
@@ -1965,6 +2169,7 @@ export const SelectionManager = () => {
 
     subscribedKinds.forEach((type) => {
       emitter.on(`${type}:enter` as any, onEnter as any)
+      emitter.on(`${type}:move` as any, onEnter as any)
       emitter.on(`${type}:leave` as any, onLeave as any)
       emitter.on(`${type}:double-click` as any, onDoubleClick as any)
     })
@@ -1972,6 +2177,7 @@ export const SelectionManager = () => {
     return () => {
       subscribedKinds.forEach((type) => {
         emitter.off(`${type}:enter` as any, onEnter as any)
+        emitter.off(`${type}:move` as any, onEnter as any)
         emitter.off(`${type}:leave` as any, onLeave as any)
         emitter.off(`${type}:double-click` as any, onDoubleClick as any)
       })
@@ -1985,6 +2191,7 @@ export const SelectionManager = () => {
     if (mode !== 'delete') return
 
     const onClick = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
       const node = event.node
       if (!isNodeInCurrentLevel(node)) return
 
@@ -2003,14 +2210,16 @@ export const SelectionManager = () => {
     }
 
     const onEnter = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
       const node = event.node
       if (!isNodeInCurrentLevel(node)) return
       if (node.type === 'building' || node.type === 'site') return
       event.stopPropagation()
-      useViewer.setState({ hoveredId: node.id })
+      useViewer.getState().setHoveredId(node.id)
     }
 
     const onLeave = (event: NodeEvent) => {
+      if (isCeilingGridHit(event)) return
       const nodeId = event?.node?.id
       if (nodeId && useViewer.getState().hoveredId === nodeId) {
         useViewer.setState({ hoveredId: null })
@@ -2061,6 +2270,7 @@ export const SelectionManager = () => {
       <SelectionStateSync />
       <SelectionMaterialSync />
       <EditorOutlinerSync />
+      <RoomHighlight3D />
     </>
   )
 }
@@ -2144,6 +2354,7 @@ const SelectionMaterialSync = () => {
   const previewSelectedIds = useViewer((s) => s.previewSelectedIds)
   const hoveredId = useViewer((s) => s.hoveredId)
   const hoverHighlightMode = useViewer((s) => s.hoverHighlightMode)
+  const registryVersion = useRegistryVersion()
   const geometryRevision = useViewer((s) => s.geometryRevision)
   const activeHighlightKindsRef = useRef(new Map<string, HighlightKind>())
   const highlightedMaterialsRef = useRef(
@@ -2163,6 +2374,10 @@ const SelectionMaterialSync = () => {
     for (const [id, kind] of activeHighlightKindsRef.current.entries()) {
       const node = useScene.getState().nodes[id as AnyNodeId]
       if (node?.type === 'wall') {
+        continue
+      }
+
+      if (node && !isSelectionHighlightEnabled(node.type)) {
         continue
       }
 
@@ -2221,6 +2436,7 @@ const SelectionMaterialSync = () => {
   }, [])
 
   useEffect(() => {
+    void registryVersion
     void geometryRevision
     const nextHighlightKinds = new Map<string, HighlightKind>()
 
@@ -2236,6 +2452,7 @@ const SelectionMaterialSync = () => {
     syncSelectionMaterials()
   }, [
     geometryRevision,
+    registryVersion,
     hoverHighlightMode,
     hoveredId,
     previewSelectedIds,
@@ -2276,7 +2493,7 @@ const SelectionMaterialSync = () => {
   }, [])
 
   useEffect(() => {
-    return () => {
+    const clearHighlights = () => {
       for (const [mesh, entry] of highlightedMaterialsRef.current.entries()) {
         if (mesh.material === entry.highlightedMaterial) {
           mesh.material = entry.originalMaterial
@@ -2285,6 +2502,11 @@ const SelectionMaterialSync = () => {
       }
 
       highlightedMaterialsRef.current.clear()
+    }
+    const unsubscribe = registerMaterialCacheCleanup(clearHighlights)
+    return () => {
+      unsubscribe()
+      clearHighlights()
     }
   }, [])
 
@@ -2297,64 +2519,62 @@ const EditorOutlinerSync = () => {
   const previewSelectedIds = useViewer((s) => s.previewSelectedIds)
   const hoveredId = useViewer((s) => s.hoveredId)
   const geometryRevision = useViewer((s) => s.geometryRevision)
+  const registryVersion = useRegistryVersion()
   const outliner = useViewer((s) => s.outliner)
   const nodes = useScene((s) => s.nodes)
+  const paintOutline = usePaintOutline((s) => s.surfaces)
 
   useEffect(() => {
     void geometryRevision
+    void registryVersion
     let idsToHighlight: string[] = []
 
-    // 1. Determine what should be highlighted based on Phase
-    switch (phase) {
-      case 'site':
-        // Only highlight the building if one is selected
-        if (selection.buildingId) idsToHighlight = [selection.buildingId]
-        break
-
-      case 'structure':
-        // Highlight selected items (walls/slabs)
-        // We IGNORE buildingId even if it's set in the store
-        idsToHighlight = Array.from(new Set([...selection.selectedIds, ...previewSelectedIds]))
-        break
-
-      case 'furnish':
-        // Highlight selected furniture/items
-        idsToHighlight = Array.from(new Set([...selection.selectedIds, ...previewSelectedIds]))
-        break
-
-      default:
-        // Pure Viewer mode: Highlight based on the "deepest" selection
-        if (selection.selectedIds.length > 0 || previewSelectedIds.length > 0) {
-          idsToHighlight = Array.from(new Set([...selection.selectedIds, ...previewSelectedIds]))
-        } else if (selection.levelId) {
-          idsToHighlight = [selection.levelId]
-        } else if (selection.buildingId) {
-          idsToHighlight = [selection.buildingId]
-        }
+    // 1. Site outlines the building; inside it, the selection.
+    if (phase === 'site') {
+      if (selection.buildingId) idsToHighlight = [selection.buildingId]
+    } else {
+      idsToHighlight = Array.from(new Set([...selection.selectedIds, ...previewSelectedIds]))
     }
 
     // 2. Sync with the imperative outliner arrays (mutate in place to keep references)
     outliner.selectedObjects.length = 0
     for (const id of idsToHighlight) {
-      if (!nodes[id as AnyNodeId]) continue
+      const node = nodes[id as AnyNodeId]
+      if (!(node && isSelectionHighlightEnabled(node.type))) continue
       const obj = sceneRegistry.nodes.get(id)
       if (obj?.parent) outliner.selectedObjects.push(obj)
     }
 
     outliner.hoveredObjects.length = 0
-    if (hoveredId) {
+    if (paintOutline) {
+      // Paint on a floor plate: exactly the surfaces the click changes.
+      for (const mesh of paintSurfaceMeshes(paintOutline, (id) => sceneRegistry.nodes.get(id)))
+        if (mesh.parent) outliner.hoveredObjects.push(mesh)
+    } else if (hoveredId) {
       if (!nodes[hoveredId as AnyNodeId]) {
         useViewer.setState({ hoveredId: null })
       } else {
         const hoveredNode = nodes[hoveredId as AnyNodeId]
-        const obj =
-          hoveredNode?.type === 'roof-segment'
-            ? (getHoveredRoofSegmentOutlineProxy(hoveredId) ?? sceneRegistry.nodes.get(hoveredId))
-            : sceneRegistry.nodes.get(hoveredId)
-        if (obj?.parent) outliner.hoveredObjects.push(obj)
+        if (hoveredNode && isSelectionHighlightEnabled(hoveredNode.type)) {
+          const obj =
+            hoveredNode.type === 'roof-segment'
+              ? (getHoveredRoofSegmentOutlineProxy(hoveredId) ?? sceneRegistry.nodes.get(hoveredId))
+              : sceneRegistry.nodes.get(hoveredId)
+          if (obj?.parent) outliner.hoveredObjects.push(obj)
+        }
       }
     }
-  }, [geometryRevision, phase, previewSelectedIds, selection, hoveredId, outliner, nodes])
+  }, [
+    geometryRevision,
+    registryVersion,
+    phase,
+    previewSelectedIds,
+    selection,
+    hoveredId,
+    outliner,
+    nodes,
+    paintOutline,
+  ])
 
   return null
 }

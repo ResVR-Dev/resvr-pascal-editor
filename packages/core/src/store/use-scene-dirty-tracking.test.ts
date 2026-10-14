@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { nodeRegistry } from '../registry/registry'
 import type { AnyNodeDefinition } from '../registry/types'
 import type { AnyNode, AnyNodeId } from '../schema/types'
+import useLiveNodeOverrides from './use-live-node-overrides'
 import useScene from './use-scene'
 
 const untrackedDef = {
@@ -39,9 +40,8 @@ describe('dirty tracking', () => {
   beforeEach(() => {
     if (!nodeRegistry.has(untrackedDef.kind)) nodeRegistry._register(untrackedDef)
     if (!nodeRegistry.has(trackedDef.kind)) nodeRegistry._register(trackedDef)
-    // Clear rather than replace the dirty set: the store's own instance is the
-    // guarded one, and the raw-add tests below exercise that guard.
-    useScene.getState().dirtyNodes.clear()
+    useScene.getState().unloadScene()
+    useScene.setState({ readOnly: false })
     useScene.setState({
       nodes: {
         [UNTRACKED]: makeNode(UNTRACKED, 'test-untracked'),
@@ -51,6 +51,11 @@ describe('dirty tracking', () => {
       rootNodeIds: [UNTRACKED, TRACKED, UNREGISTERED],
       collections: {},
     } as never)
+    useScene.temporal.getState().clear()
+  })
+
+  afterEach(() => {
+    useScene.getState().unloadScene()
     useScene.temporal.getState().clear()
   })
 
@@ -105,6 +110,31 @@ describe('dirty tracking', () => {
     useScene.getState().deleteNodes([TRACKED])
     expect(useScene.getState().nodes[TRACKED]).toBeUndefined()
     expect(useScene.getState().dirtyNodes.has(TRACKED)).toBe(false)
+  })
+
+  test('a node drawn from a live override rebuilds once the override goes, whoever clears it', () => {
+    const overrides = useLiveNodeOverrides.getState()
+    const dirty = () => useScene.getState().dirtyNodes
+    overrides.set(TRACKED, { polygon: [[0, 0]], holes: [] })
+    dirty().clear()
+    // Updating the preview is the previewer's to mark; nothing is forced here.
+    overrides.set(TRACKED, { polygon: [[1, 1]] })
+    expect(dirty().has(TRACKED)).toBe(false)
+    // Dropping one field rebuilds…
+    overrides.clearFields(TRACKED, ['holes'])
+    expect(dirty().has(TRACKED)).toBe(true)
+    dirty().clear()
+    // …and so does dropping the override, alone or with every other one.
+    overrides.clear(TRACKED)
+    expect(dirty().has(TRACKED)).toBe(true)
+    dirty().clear()
+    overrides.setMany([
+      [TRACKED, { polygon: [] }],
+      ['item_gone', { polygon: [] }],
+    ])
+    dirty().clear()
+    overrides.clearAll()
+    expect([...dirty()]).toEqual([TRACKED])
   })
 
   test('visibility updates mark dirty before the batched RAF callback', () => {

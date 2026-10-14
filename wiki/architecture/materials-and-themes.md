@@ -41,7 +41,7 @@ resolveSurfaceColor(role, colorPreset, sceneThemeId?)
 
 ## The rule: untextured surfaces are theme-coloured in both modes
 
-This is the important invariant. A surface is "textured" only if its node has an explicit `materialPreset` or `material`.
+For kinds without declared slot defaults, a surface is "textured" only if its node has an explicit `materialPreset` or `material`. Kinds with slot defaults use the slot contract described below.
 
 - **`textures` off** → every surface uses `resolveSurfaceColor(role, …)`.
 - **`textures` on** → textured surfaces show their texture; **untextured surfaces still use `resolveSurfaceColor`** (not a hardcoded white/grey default).
@@ -54,7 +54,7 @@ So picking the Mediterranean theme gives a blue roof + warm walls without touchi
 |---|---|
 | wall | `systems/wall/wall-materials.ts` (`getMaterialsForWall`), re-applied each frame by `wall-cutout.tsx` |
 | roof / roof-segment | `systems/roof/roof-materials.ts` (`getRoofMaterialArray`) |
-| slab | `nodes/slab/geometry.ts` (`getSlabMaterial`) |
+| slab | `nodes/slab/geometry.ts` (`getSlabSlotMaterial`) |
 | ceiling | `nodes/ceiling/renderer.tsx` |
 | generic registry kinds | `systems/geometry/geometry-system.tsx` → `applyDefaultSurfaceRole` (textures-off) |
 | door / window | `systems/{door,window}/*-system.tsx` |
@@ -62,11 +62,74 @@ So picking the Mediterranean theme gives a blue roof + warm walls without touchi
 
 Each of these reads `shading`/`textures`/`colorPreset`/`sceneTheme` from `useViewer` (or receives them threaded from `GeometrySystem`) and **must include `sceneTheme` in its material cache key and its rebuild dependency array**, or theme switches won't re-colour. `GeometrySystem` marks every geometry node dirty on any of those changing.
 
+Ceilings and slabs use declared slot defaults in colored (`textures` on) mode.
+Ceiling undersides use an opaque `BackSide` material in both appearances; only
+`ceiling-grid` blends. Slab top, side/underside and optional terrain skirt meshes
+can batch separately. Flat slot defaults share the viewer cache by color, roughness
+and shading; slab legacy cached materials carry `__pascalCachedMaterial` so geometry
+rebuilds leave shared materials alive. Transparent slot overrides draw themselves.
+
+## Procedural item recipe finishes
+
+Recipe slots keep a required authored hex color and may declare
+`finish: 'glass' | 'metal' | 'wood'`. On a generated design's first catalog save,
+`snapProceduralSlotsToLibrary` calls `resolveProceduralFinishRef(finish, color)` to
+select the curated preset nearest to the authored color in CIE76 Lab (D65).
+Ties follow the list order below. Glass always selects `library:preset-glass`;
+slots without a finish select the nearest flat library color. Explicit overrides,
+including an Authored hex pick, are preserved. The recipe hex is never rewritten.
+Existing recipes and scene instances are not automatically resnapped.
+
+| Finish | Library preset id | Label | Representative tone |
+|---|---|---|---|
+| Glass | `preset-glass` | Glass | `#87ceeb` |
+| Metal | `metal-steel` | Brushed Steel | `#636363` |
+| Metal | `metal-chrome` | Chrome | `#c8ccce` |
+| Metal | `metal-brass` | Brass | `#b08d57` |
+| Metal | `metal-copper` | Copper | `#cc845b` |
+| Metal | `metal-polished` | Polished Metal | `#f3f3f3` |
+| Metal | `preset-metal` | Metal | `#c7ccd2` |
+| Wood | `wood-finewood27` | Finewood 27 | `#a77440` |
+| Wood | `wood-woodplank48` | Wood Plank 48 | `#88654c` |
+| Wood | `wood-hungarianparquet2` | Hungarian Parquet 2 | `#663020` |
+| Wood | `wood-squareparquet21` | Square Parquet 21 | `#3e220d` |
+
+The wood list is owner-curated: two light browns, one medium brown, and one darkest
+brown. Metal includes only the six listed surface finishes, excluding Garage Panel
+and other panel textures. Brushed Steel, Copper, and Polished Metal still have
+surface texture maps; Chrome, Brass, and Metal use flat material properties.
+
+Representative tones live beside the curated references in `library-colors.ts`.
+For wood, they are the arithmetic mean of every sRGB pixel's R/G/B channels in the
+1024×1024 source base-color WebPs under `apps/editor/public/material/wood/`:
+`finewood_27/finewood_27_basecolor.webp`, `woodplank_48/woodplank_48_BaseColor.webp`,
+`hungarian_parquet_2/Hungarian Parquet_2_baseColor.webp`, and
+`square_parquet_21/Square Pattern Parquet_21_baseColor.webp`.
+For textured metals, the equivalent mean uses the 512×512 base level decoded from
+`metal/{stainless_steel_brushed,copper_metal,polished_metal}/*_basecolor_512.ktx2`
+with `basisu -unpack -no_ktx -etc1_only`. A small Python script used Pillow's
+`ImageStat.Stat(image.convert('RGB')).mean`, rounding each channel to the nearest
+integer before hex encoding. Flat finishes use `mapProperties.color`.
+
+Studio and the colored scene renderer resolve the actual library preset, retaining
+its texture maps and world-scale repeat (currently one tile per metre for these
+finishes). Representative tones only drive nearest-color matching and the 2D
+bounds glyph: `proceduralSlotColor` uses them for curated library overrides so a
+white texture tint does not produce a white glyph. Absent overrides and Authored
+picks use the recipe hex; other library and scene-material color resolution is
+unchanged.
+
+Glass remains blue `#87ceeb`, transparency enabled, opacity 0.3, with Fresnel
+reflections in rendered shading. The recipe hex does not retint that preset.
+Monochrome scene appearance still uses the furnishing theme material. Studio's
+Authored option clears a saved slot override (or stores the hex on an unsaved
+draft), restoring the opaque authored material.
+
 ## Custom-mesh face materials
 
 Blocks use the reusable `MaterialRef` model through stable, user-named object slots. `BlockNode.slots` maps slot IDs to `scene:` or `library:` references, `slotNames` stores their editable labels, and each `BlockFace.materialSlot` stores one slot ID. `body` is the permanent base slot and the fallback for unbound or unresolved slots.
 
-The geometry builder emits one Three.js group per topology face and a material array ordered by the node's stable slot IDs. It publishes that render-material order as `userData.slotIds` and records each face's vertex range in `geometry.userData.blockFaces`. The paint capability re-raycasts the mesh and maps the hit triangle through those ranges to a stable topology face ID, so preview and commit affect only that face. Face UVs retain the world-scale projection contract below.
+The geometry builder lays the faces out slot by slot and emits one Three.js group per material slot, with a material array ordered by the node's stable slot IDs; a block with a single slot draws with that one material, so node batching can pack it. It publishes that render-material order as `userData.slotIds` and records each face's contiguous vertex range in `geometry.userData.blockFaces`. The paint capability re-raycasts the mesh and maps the hit triangle through those ranges to a stable topology face ID and its slot; preview and commit affect that slot's faces. Face UVs are metres in each face's own frame (`getBlockFaceFrame`, the frame face hosting uses): U runs level along the face and V up it, so courses stay level on every side, slopes tile at true length and no face reads mirrored from outside. This is the world-scale contract below.
 
 The block inspector calls this collection **Slots**. Users can rename slots, and the Paint tool changes a slot's material using reusable scene-material datablocks. While one or more faces are selected in edit mode, clicking a slot binds those faces to it immediately; there is no separate Assign / Select / Deselect button row.
 
@@ -119,7 +182,7 @@ A `SceneTheme` (`lib/scene-themes.ts`) bundles everything that defines a "look":
 | `toneMappingExposure` | Renderer exposure. |
 | `clayTints?` | Per-`SurfaceRole` colour overrides layered on top of `colorPreset` (see [resolving a colour](#resolving-a-colour)). |
 
-The editor UI chrome is always dark (a fixed `document.body.classList.add('dark')`) and is independent of `appearance`.
+The editor UI chrome follows the host's theme and is independent of `appearance`. The editor sets no `dark` class itself: its chrome and every portal resolve against the host's `.dark` ancestor (the open-source app adds `dark` to `<body>` while its editor page is mounted; Pascal's hosted app lets next-themes set it on `<html>`). Chrome colour literals have a light base with the dark value under `dark:` (`bg-black/4 dark:bg-[#2C2C2E]`), so a new control needs both. `dark:hover:*` ties with `disabled:hover:*` and is emitted later, so a control that resets its hover when disabled resets it under `dark:disabled:hover:` too. Presentation HUDs (Preview, walkthrough, the viewer's controls with their menus and tooltips) and self-contained overlays (cursor badges, room labels, the snapshot viewfinder, the Point and ask layer) stay dark in either theme. A host that owns the theme setting passes `InterfaceThemeRow` (System / Light / Dark) to `SettingsPanel` through `preferences`.
 
 ## Adding a theme
 

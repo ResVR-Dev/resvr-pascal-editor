@@ -28,11 +28,11 @@ const SHORTCUT_CATEGORIES: ShortcutCategory[] = [
   {
     title: 'Editor Navigation',
     shortcuts: [
-      { keys: ['1'], action: 'Switch to Site phase' },
-      { keys: ['2'], action: 'Switch to Structure phase' },
-      { keys: ['3'], action: 'Switch to Furnish phase' },
-      { keys: ['F'], action: 'Switch to Furnish layer' },
-      { keys: ['Z'], action: 'Switch to Zones layer' },
+      { keys: ['1'], action: 'Switch to Site' },
+      { keys: ['2'], action: 'Switch to Building' },
+      { keys: ['\\'], action: 'Open or close the split view' },
+      { keys: ['F'], action: 'Open the items catalog with the item tool' },
+      { keys: ['Z'], action: 'Draw a zone' },
       {
         keys: ['Cmd/Ctrl', 'Arrow Up'],
         action: 'Select next level in the active building',
@@ -59,6 +59,7 @@ const SHORTCUT_CATEGORIES: ShortcutCategory[] = [
       { keys: ['Delete / Backspace'], action: 'Delete selected objects' },
       { keys: ['Cmd/Ctrl', 'Z'], action: 'Undo' },
       { keys: ['Cmd/Ctrl', 'Shift', 'Z'], action: 'Redo' },
+      { keys: ['Cmd/Ctrl', 'S'], action: 'Save' },
     ],
   },
   {
@@ -226,12 +227,12 @@ export function KeyboardShortcutsDialog() {
       <DialogTrigger asChild>
         <Button className="w-full justify-start gap-2" variant="outline">
           <Keyboard className="size-4" />
-          Keyboard Shortcuts
+          Keyboard shortcuts
         </Button>
       </DialogTrigger>
       <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden p-0 sm:max-w-3xl">
         <DialogHeader className="shrink-0 border-b px-6 py-4">
-          <DialogTitle>Keyboard Shortcuts</DialogTitle>
+          <DialogTitle>Keyboard shortcuts</DialogTitle>
           <DialogDescription>
             Shortcuts are context-aware. Guided constraints are enabled by default; hold Shift
             during an active gesture to build freely.

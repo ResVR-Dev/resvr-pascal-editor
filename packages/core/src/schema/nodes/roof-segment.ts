@@ -3,19 +3,9 @@ import { z } from 'zod'
 import { BaseNode, nodeType, objectId } from '../base'
 import type { MaterialSchema as MaterialSchemaType } from '../material'
 import { MaterialSchema } from '../material'
+import { RoofType } from './roof-types'
 
-export const RoofType = z.enum([
-  'hip',
-  'gable',
-  'shed',
-  'gambrel',
-  'dutch',
-  'mansard',
-  'flat',
-  'conical',
-])
-
-export type RoofType = z.infer<typeof RoofType>
+export { RoofType } from './roof-types'
 
 export const MIN_ROOF_SEGMENT_TRIM_SPAN = 0.1
 const DEFAULT_ROOF_SEGMENT_WIDTH = 8
@@ -173,6 +163,20 @@ export const RoofSegmentNode = BaseNode.extend({
   managedByParent: z.boolean().default(false),
   wallShell: z.enum(['auto', 'include', 'omit']).default('auto'),
   shedInsetEndPanels: z.boolean().default(false),
+  // Plumb 1x8 fascia and rake boards on the eaves and rakes (gable, hip,
+  // shed, flat), built from the segment itself so they follow its pitch,
+  // size, overhang and type.
+  fascia: z.boolean().optional(),
+  // Shed only: the board on the high edge. Off when that edge meets a wall
+  // (a porch cover on a ledger); a lean-to never has one.
+  fasciaHighEdge: z.boolean().optional(),
+  // The boards' height and thickness; a 1x8 (0.184 × 0.019 m) when absent. With a height set, a
+  // flat roof's boards rise to the roof's top: a coping band over the deck and membrane edges.
+  fasciaHeight: z.number().positive().optional(),
+  fasciaDepth: z.number().positive().optional(),
+  // The boards' and rakes' own finish; absent, they take the wall role's, as they always did.
+  fasciaMaterial: MaterialSchema.optional(),
+  fasciaMaterialPreset: z.string().optional(),
   // Shape-specific ratios. Only the pair matching `roofType` is read; the
   // rest are inert. Defined on every segment so the panel can flip
   // roofType without losing the previous shape's tuning.
@@ -241,6 +245,10 @@ export const RoofSegmentNode = BaseNode.extend({
   - wallThickness/deckThickness: structural thicknesses
   - overhang: eave overhang distance
   - shingleThickness: outer shingle layer thickness
+  - fascia: plumb fascia and rake boards on the eaves and rakes (gable, hip, shed, flat) (off when absent)
+  - fasciaHighEdge: shed only — a board on the high edge (off when it meets a wall; on when absent)
+  - fasciaHeight/fasciaDepth: the boards' size (a 1x8 when absent); with a height, a flat roof's boards reach its top
+  - fasciaMaterial/fasciaMaterialPreset: the boards' and rakes' finish (the wall role's when absent)
   - gambrelLowerWidthRatio / gambrelLowerHeightRatio: kink position on gambrel roofs
   - mansardSteepWidthRatio / mansardSteepHeightRatio: waist position on mansard roofs
   - dutchHipWidthRatio / dutchHipHeightRatio: hip-to-gable split on dutch roofs
@@ -834,6 +842,19 @@ export function getEffectiveSegmentSurfaceMaterial(
   return parentFallback ?? { material: undefined, materialPreset: undefined }
 }
 
+/** The fascia and rake boards' own finish, or null when they take the wall role's. */
+export function getSegmentFasciaMaterial(
+  node: RoofSegmentNode,
+): RoofSegmentSurfaceMaterialSpec | null {
+  if (node.fasciaMaterial === undefined && typeof node.fasciaMaterialPreset !== 'string')
+    return null
+  return {
+    material: node.fasciaMaterial,
+    materialPreset:
+      typeof node.fasciaMaterialPreset === 'string' ? node.fasciaMaterialPreset : undefined,
+  }
+}
+
 /**
  * Returns true when the segment has any segment-level material override —
  * either the legacy catch-all or any of the three role-specific fields.
@@ -850,6 +871,8 @@ export function hasSegmentMaterialOverride(node: RoofSegmentNode): boolean {
     node.edgeMaterial !== undefined ||
     typeof node.edgeMaterialPreset === 'string' ||
     node.wallMaterial !== undefined ||
-    typeof node.wallMaterialPreset === 'string'
+    typeof node.wallMaterialPreset === 'string' ||
+    node.fasciaMaterial !== undefined ||
+    typeof node.fasciaMaterialPreset === 'string'
   )
 }
