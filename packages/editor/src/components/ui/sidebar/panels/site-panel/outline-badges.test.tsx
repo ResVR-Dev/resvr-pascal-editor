@@ -161,6 +161,8 @@ describe.skipIf(jsdom === null)('outline row badges, mounted', () => {
   let root: { render: (node: React.ReactNode) => void; unmount: () => void } | null = null
   let host: HTMLElement | null = null
   let installedBefore: string[] = []
+  let wasTracking = true
+  let actFlag: PropertyDescriptor | undefined
 
   beforeAll(async () => {
     if (!jsdom) return
@@ -178,15 +180,23 @@ describe.skipIf(jsdom === null)('outline row badges, mounted', () => {
       scope[key] = key === 'window' ? dom.window : dom.window.document
       added.push(key)
     }
+    // Put back as found afterwards, whether or not a preload had set it.
+    actFlag = Object.getOwnPropertyDescriptor(scope, 'IS_REACT_ACT_ENVIRONMENT')
     scope.IS_REACT_ACT_ENVIRONMENT = true
-    added.push('IS_REACT_ACT_ENVIRONMENT')
     installedBefore = useScene.getState().installedPlugins
+    // The install toggles are store writes; kept out of undo history so no
+    // later test inherits them as steps.
+    wasTracking = useScene.temporal.getState().isTracking
+    useScene.temporal.getState().pause()
   })
 
   afterAll(() => {
     const scope = globalThis as Record<string, unknown>
     for (const key of added) delete scope[key]
+    if (actFlag) Object.defineProperty(scope, 'IS_REACT_ACT_ENVIRONMENT', actFlag)
+    else delete scope.IS_REACT_ACT_ENVIRONMENT
     useScene.setState({ installedPlugins: installedBefore })
+    if (wasTracking) useScene.temporal.getState().resume()
   })
 
   afterEach(() => {
@@ -241,6 +251,7 @@ describe.skipIf(jsdom === null)('outline row badges, mounted', () => {
   }
 
   test('follows a late load, the install gate, and a same-id replacement', async () => {
+    const pastBefore = useScene.temporal.getState().pastStates.length
     nodeRegistry._reset()
     setInstalled([])
     await mountRow()
@@ -260,5 +271,6 @@ describe.skipIf(jsdom === null)('outline row badges, mounted', () => {
 
     await register({ id: EXTENSION_ID, pluginId: PLUGIN_ID, useRowBadge: useFourHookBadge })
     expect(readBadge()).toEqual({ fill: 'filled', label: 'four hooks' })
+    expect(useScene.temporal.getState().pastStates).toHaveLength(pastBefore)
   })
 })
