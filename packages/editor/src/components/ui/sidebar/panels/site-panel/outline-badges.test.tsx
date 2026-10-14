@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { type AnyNodeId, loadPlugin, nodeRegistry, type OutlineExtension } from '@pascal-app/core'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { OutlineLevelSummary } from './outline-badges'
+import { isOutlineExtensionInstalled, OutlineLevelSummary } from './outline-badges'
 import { TreeNodeWrapper } from './tree-node'
 
 const WALL_ID = 'wall_outline_badge'
@@ -17,7 +17,10 @@ afterEach(() => {
   restore()
 })
 
-function renderRow(): string {
+function renderRow(
+  nodeId: string | null = WALL_ID,
+  summary: React.ReactNode = null,
+): string {
   return renderToStaticMarkup(
     <TreeNodeWrapper
       depth={1}
@@ -25,9 +28,10 @@ function renderRow(): string {
       hasChildren={false}
       icon={null}
       label="Wall"
-      nodeId={WALL_ID}
+      nodeId={nodeId ?? undefined}
       onClick={() => {}}
       onToggle={() => {}}
+      summary={summary}
     />,
   )
 }
@@ -41,9 +45,14 @@ describe('outline row badges', () => {
     nodeRegistry._reset()
     const markup = renderRow()
 
-    expect(markup).not.toContain('data-outline-badge')
+    // The row without a node id never reaches the slot, so the two can only
+    // differ by the id attribute itself if the slot adds nothing.
+    expect(markup.replace(` data-treenode-id="${WALL_ID}"`, '')).toBe(renderRow(null))
     expect(markup).toContain('Wall')
     expect(renderToStaticMarkup(<OutlineLevelSummary levelId={LEVEL_ID} />)).toBe('')
+    expect(renderRow(null, <OutlineLevelSummary levelId={LEVEL_ID} />)).toBe(
+      renderRow(null),
+    )
   })
 
   test('draws the badge an extension returns, for the row it was asked about', async () => {
@@ -84,6 +93,22 @@ describe('outline row badges', () => {
     })
 
     expect(renderRow()).not.toContain('data-outline-badge')
+  })
+})
+
+describe('outline install gate', () => {
+  const named: OutlineExtension = { id: 'test:outline:marks', pluginId: 'test:named' }
+
+  test('lets through an extension whose plugin the project installed', () => {
+    expect(isOutlineExtensionInstalled(named, ['test:other', 'test:named'])).toBe(true)
+  })
+
+  test('keeps out one whose plugin it did not', () => {
+    expect(isOutlineExtensionInstalled(named, ['test:other'])).toBe(false)
+  })
+
+  test('lets through one with no plugin id whatever is installed', () => {
+    expect(isOutlineExtensionInstalled({ ...named, pluginId: '' }, [])).toBe(true)
   })
 })
 

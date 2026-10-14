@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { z } from 'zod'
 import {
   getHostRefFields,
@@ -510,8 +510,17 @@ describe('inspector extensions', () => {
 })
 
 describe('outline extensions', () => {
+  // Put back whatever the registry held before, so nothing registered here
+  // reaches a later test file sharing the singleton.
+  let restoreRegistry: () => void = () => {}
+
   beforeEach(() => {
+    restoreRegistry = nodeRegistry._snapshot()
     nodeRegistry._reset()
+  })
+
+  afterEach(() => {
+    restoreRegistry()
   })
 
   function makeOutline(id: string, pluginId = 'test:plugin'): OutlineExtension {

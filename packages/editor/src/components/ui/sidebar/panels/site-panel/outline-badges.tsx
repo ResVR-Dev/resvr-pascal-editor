@@ -9,18 +9,42 @@ import {
 import { useMemo } from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../primitives/tooltip'
 
-// Plugin outline decorations (`Plugin.outlineExtensions`), behind the same
-// install gate as inspector extensions. Re-derived on the registry-version
-// bump because plugins load after the first mount.
+/** The install gate inspector extensions use: no plugin id, or an installed one. */
+export function isOutlineExtensionInstalled(
+  extension: OutlineExtension,
+  installedPlugins: readonly string[],
+): boolean {
+  return !extension.pluginId || installedPlugins.includes(extension.pluginId)
+}
+
+// Plugin outline decorations (`Plugin.outlineExtensions`), behind the
+// install gate. Re-derived on the registry-version bump because plugins load
+// after the first mount.
 function useOutlineExtensions(): readonly OutlineExtension[] {
   const registryVersion = useRegistryVersion()
   const installedPlugins = useScene((s) => s.installedPlugins)
   return useMemo(() => {
     void registryVersion
-    return getOutlineExtensions().filter(
-      (extension) => !extension.pluginId || installedPlugins.includes(extension.pluginId),
+    return getOutlineExtensions().filter((extension) =>
+      isOutlineExtensionInstalled(extension, installedPlugins),
     )
   }, [installedPlugins, registryVersion])
+}
+
+// A key per registered extension object rather than per id: a same-id
+// re-registration (HMR) hands over different hooks, and keeping the old
+// component instance would run them against the old hook state.
+const extensionKeys = new WeakMap<OutlineExtension, string>()
+let nextExtensionKey = 0
+
+function keyOf(extension: OutlineExtension): string {
+  let key = extensionKeys.get(extension)
+  if (!key) {
+    nextExtensionKey += 1
+    key = `${extension.id}#${nextExtensionKey}`
+    extensionKeys.set(extension, key)
+  }
+  return key
 }
 
 /**
@@ -36,7 +60,7 @@ export function OutlineRowBadges({ nodeId }: { nodeId: string }) {
         extension.useRowBadge ? (
           <OutlineRowBadge
             extensionId={extension.id}
-            key={extension.id}
+            key={keyOf(extension)}
             nodeId={nodeId as AnyNodeId}
             useRowBadge={extension.useRowBadge}
           />
@@ -55,7 +79,7 @@ export function OutlineLevelSummary({ levelId }: { levelId: string }) {
         extension.useLevelSummary ? (
           <OutlineLevelSummaryText
             extensionId={extension.id}
-            key={extension.id}
+            key={keyOf(extension)}
             levelId={levelId as AnyNodeId}
             useLevelSummary={extension.useLevelSummary}
           />
@@ -65,8 +89,8 @@ export function OutlineLevelSummary({ levelId }: { levelId: string }) {
   )
 }
 
-// One component per extension, keyed by its id, so each hook keeps a stable
-// call position however many extensions load later.
+// One component per extension, so each hook keeps a stable call position
+// however many extensions load later.
 function OutlineRowBadge({
   extensionId,
   nodeId,
