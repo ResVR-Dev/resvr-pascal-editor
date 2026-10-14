@@ -5,6 +5,7 @@ import { memo, useCallback, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { getDefaultLevelName, getLevelDisplayName } from '@pascal-app/core'
 import { InlineRenameInput } from './inline-rename-input'
+import { OutlineLevelSummary } from './outline-badges'
 import { focusTreeNode, TreeNode, TreeNodeWrapper } from './tree-node'
 import { TreeNodeActions } from './tree-node-actions'
 
@@ -67,6 +68,7 @@ export const LevelTreeNode = memo(function LevelTreeNode({
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onToggle={handleToggle}
+      summary={<OutlineLevelSummary levelId={nodeId} />}
     >
       {children.map((childId, index) => (
         <TreeNode

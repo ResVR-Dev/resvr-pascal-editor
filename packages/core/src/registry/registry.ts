@@ -7,6 +7,7 @@ import type {
   FloorplanScope,
   InspectorExtension,
   NodeRegistry,
+  OutlineExtension,
   Plugin,
 } from './types'
 
@@ -20,6 +21,11 @@ const pluginIdsByKind = new Map<string, string>()
 // test reset alongside `pluginIdsByKind`. Consumers re-derive on the
 // registry-version bump — plugins load asynchronously, after first mount.
 const inspectorExtensionsByKind = new Map<string, InspectorExtension[]>()
+
+// Outline decorations contributed by plugins (`Plugin.outlineExtensions`),
+// in load order. Not per kind: a row badge decides for itself which nodes
+// it marks. Same lifecycle as `inspectorExtensionsByKind`.
+const outlineExtensions: OutlineExtension[] = []
 
 // ---------------------------------------------------------------------------
 // Registry change notification. Plugin kinds register ASYNCHRONOUSLY (app
@@ -151,6 +157,7 @@ class NodeRegistryImpl implements NodeRegistry {
     this.defs.clear()
     pluginIdsByKind.clear()
     inspectorExtensionsByKind.clear()
+    outlineExtensions.length = 0
     notifyRegistryChanged()
   }
 
@@ -168,6 +175,7 @@ class NodeRegistryImpl implements NodeRegistry {
     const extensions = new Map(
       Array.from(inspectorExtensionsByKind, ([kind, list]) => [kind, [...list]] as const),
     )
+    const outline = [...outlineExtensions]
     return () => {
       this.defs.clear()
       for (const [kind, def] of defs) this.defs.set(kind, def)
@@ -175,6 +183,8 @@ class NodeRegistryImpl implements NodeRegistry {
       for (const [kind, id] of pluginIds) pluginIdsByKind.set(kind, id)
       inspectorExtensionsByKind.clear()
       for (const [kind, list] of extensions) inspectorExtensionsByKind.set(kind, [...list])
+      outlineExtensions.length = 0
+      outlineExtensions.push(...outline)
       notifyRegistryChanged()
     }
   }
@@ -206,6 +216,15 @@ export function getNodePluginId(kind: string): string | undefined {
  */
 export function getInspectorExtensions(kind: string): InspectorExtension[] {
   return inspectorExtensionsByKind.get(kind) ?? []
+}
+
+/**
+ * Outline decorations ({@link OutlineExtension}), in plugin load order.
+ * Same install gate and registry-version rule as
+ * {@link getInspectorExtensions}.
+ */
+export function getOutlineExtensions(): readonly OutlineExtension[] {
+  return outlineExtensions
 }
 
 /**
@@ -435,7 +454,19 @@ export async function loadPlugin(plugin: Plugin): Promise<void> {
       else list.push(extension)
     }
   }
-  if (nodes.length > 0 || extensions.some((extension) => extension.kinds.length > 0)) {
+  const outline = plugin.outlineExtensions ?? []
+  for (const extension of outline) {
+    // Same-id re-registration replaces in place, as above.
+    const existing = outlineExtensions.findIndex((e) => e.id === extension.id)
+    if (existing >= 0) outlineExtensions[existing] = extension
+    else outlineExtensions.push(extension)
+  }
+  // A plugin that only contributes outline extensions still re-renders consumers.
+  if (
+    nodes.length > 0 ||
+    extensions.some((extension) => extension.kinds.length > 0) ||
+    outline.length > 0
+  ) {
     notifyRegistryChanged()
   }
 }

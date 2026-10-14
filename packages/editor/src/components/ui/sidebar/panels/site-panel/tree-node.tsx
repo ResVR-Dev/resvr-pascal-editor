@@ -73,6 +73,7 @@ import { FenceTreeNode } from './fence-tree-node'
 import { GutterTreeNode } from './gutter-tree-node'
 import { ItemTreeNode } from './item-tree-node'
 import { LevelTreeNode } from './level-tree-node'
+import { OutlineRowBadges } from './outline-badges'
 import { RegistryTreeNode } from './registry-tree-node'
 import { RoofTreeNode } from './roof-tree-node'
 import { ShelfTreeNode } from './shelf-tree-node'
@@ -195,6 +196,8 @@ interface TreeNodeWrapperProps {
   onMouseLeave?: () => void
   onPointerDown?: (e: React.PointerEvent) => void
   actions?: React.ReactNode
+  // Drawn after `actions`, always visible: a level row's plugin summary.
+  summary?: React.ReactNode
   children?: React.ReactNode
   isSelected?: boolean
   isHovered?: boolean
@@ -221,6 +224,7 @@ export const TreeNodeWrapper = forwardRef<HTMLDivElement, TreeNodeWrapperProps>(
       onMouseLeave,
       onPointerDown,
       actions,
+      summary,
       children,
       isSelected,
       isHovered,
@@ -328,6 +332,8 @@ export const TreeNodeWrapper = forwardRef<HTMLDivElement, TreeNodeWrapperProps>(
               {actions}
             </div>
           )}
+          {summary}
+          {nodeId && <OutlineRowBadges nodeId={nodeId} />}
         </div>
         <AnimatePresence initial={false}>
           {expanded && children && (

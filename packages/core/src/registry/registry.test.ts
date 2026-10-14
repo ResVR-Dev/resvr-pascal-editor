@@ -4,6 +4,7 @@ import {
   getHostRefFields,
   getInspectorExtensions,
   getNodePluginId,
+  getOutlineExtensions,
   isDrawnViaTool,
   isDrawnViaToolKind,
   isNodeKindEnabled,
@@ -15,7 +16,7 @@ import {
   nodeRegistry,
   registerNode,
 } from './registry'
-import type { AnyNodeDefinition, InspectorExtension, Plugin } from './types'
+import type { AnyNodeDefinition, InspectorExtension, OutlineExtension, Plugin } from './types'
 
 // Re-registering a kind warns + replaces in dev (HMR) but throws in
 // production — see `registry._register`. `bun test` runs with
@@ -505,5 +506,59 @@ describe('inspector extensions', () => {
     expect(getInspectorExtensions('wall')).toHaveLength(1)
     nodeRegistry._reset()
     expect(getInspectorExtensions('wall')).toEqual([])
+  })
+})
+
+describe('outline extensions', () => {
+  beforeEach(() => {
+    nodeRegistry._reset()
+  })
+
+  function makeOutline(id: string, pluginId = 'test:plugin'): OutlineExtension {
+    return { id, pluginId, useRowBadge: () => null }
+  }
+
+  test('starts empty', () => {
+    expect(getOutlineExtensions()).toEqual([])
+  })
+
+  test('loadPlugin registers them in load order', async () => {
+    const a = makeOutline('a:marks', 'a')
+    const b = makeOutline('b:marks', 'b')
+    await loadPlugin({ id: 'a', apiVersion: 1, outlineExtensions: [a] })
+    await loadPlugin({ id: 'b', apiVersion: 1, outlineExtensions: [b] })
+
+    expect(getOutlineExtensions()).toEqual([a, b])
+  })
+
+  test('re-registering the same id replaces in place (HMR)', async () => {
+    const first = makeOutline('test:plugin:marks')
+    const second = makeOutline('test:plugin:marks')
+    await loadPlugin({ id: 'test:plugin', apiVersion: 1, outlineExtensions: [first] })
+    await loadPlugin({ id: 'test:plugin', apiVersion: 1, outlineExtensions: [second] })
+
+    expect(getOutlineExtensions()).toHaveLength(1)
+    expect(getOutlineExtensions()[0]).toBe(second)
+  })
+
+  test('registering only outline extensions bumps the registry version', async () => {
+    const { getRegistryVersion } = await import('./registry')
+    const before = getRegistryVersion()
+    await loadPlugin({
+      id: 'test:plugin',
+      apiVersion: 1,
+      outlineExtensions: [makeOutline('test:plugin:marks')],
+    })
+    expect(getRegistryVersion()).toBeGreaterThan(before)
+  })
+
+  test('_reset clears them and a snapshot restores them', async () => {
+    const extension = makeOutline('test:plugin:marks')
+    await loadPlugin({ id: 'test:plugin', apiVersion: 1, outlineExtensions: [extension] })
+    const restore = nodeRegistry._snapshot()
+    nodeRegistry._reset()
+    expect(getOutlineExtensions()).toEqual([])
+    restore()
+    expect(getOutlineExtensions()).toEqual([extension])
   })
 })

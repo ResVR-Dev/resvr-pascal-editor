@@ -998,12 +998,48 @@ export type InspectorExtension = {
   component: LazyComponent
 }
 
+/**
+ * A mark a plugin draws at the end of a row in the site panel's outline.
+ * `filled` is a solid dot, `hollow` a ring of the same size. `color` is any
+ * CSS colour, theme variables included, so a host can follow its own
+ * palette into dark mode. `label` is what hovering the mark says.
+ */
+export type OutlineBadge = {
+  fill: 'filled' | 'hollow'
+  color: string
+  label: string
+}
+
+/**
+ * A plugin-contributed decoration for the site panel's outline. Both
+ * members are React hooks, called once per row the outline draws, so they
+ * may subscribe to whatever store decides the answer; keep them cheap.
+ *
+ * - `useRowBadge` runs for every row keyed by a node id (the nodes under a
+ *   level) and returns the mark to draw at the row's end, or `null`.
+ * - `useLevelSummary` runs for every level row and returns faint text for
+ *   its end (e.g. `12/30 mapped`), or `null`.
+ *
+ * With no extension registered the outline draws exactly what it did
+ * before. Same `installedPlugins` gate as {@link InspectorExtension}.
+ */
+export type OutlineExtension = {
+  /** Globally unique id, e.g. `acme:review:status`. */
+  id: string
+  /** The contributing plugin's id — used for the install gate. */
+  pluginId: string
+  useRowBadge?: (nodeId: AnyNodeId) => OutlineBadge | null
+  useLevelSummary?: (levelId: AnyNodeId) => string | null
+}
+
 export type Plugin = {
   id: string
   apiVersion: 1
   nodes?: AnyNodeDefinition[]
   /** Sections contributed to the floating node inspector card. */
   inspectorExtensions?: InspectorExtension[]
+  /** Row badges and level summaries contributed to the site panel's outline. */
+  outlineExtensions?: OutlineExtension[]
 }
 
 // ─── NodeDefinition ──────────────────────────────────────────────────
