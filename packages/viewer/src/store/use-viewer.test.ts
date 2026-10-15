@@ -1,7 +1,7 @@
 // @ts-expect-error — bun:test is provided by the Bun runtime; viewer does not
 // include Bun ambient types in its production declaration build.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import useViewer from './use-viewer'
+import useViewer, { installSelectionGuard } from './use-viewer'
 
 const resetMeasurementPreferences = () => {
   useViewer.setState({
@@ -149,5 +149,28 @@ describe('scene theme', () => {
 
     expect(useViewer.getState().sceneTheme).toBe('sunset')
     expect(useViewer.getState().savedSceneTheme).toBe('sunset')
+  })
+})
+
+describe('host selection guard', () => {
+  afterEach(() => useViewer.getState().resetSelection())
+
+  test('a refused selection leaves the current one, and clearing is never asked', () => {
+    const asked: string[][] = []
+    const uninstall = installSelectionGuard((next) => {
+      asked.push(next.selectedIds)
+      return !next.selectedIds.includes('wall_held' as never)
+    })
+    useViewer.getState().setSelection({ selectedIds: ['wall_free' as never] })
+    useViewer.getState().setSelection({ selectedIds: ['wall_held' as never] })
+    expect(useViewer.getState().selection.selectedIds).toEqual(['wall_free'])
+
+    useViewer.getState().resetSelection()
+    expect(useViewer.getState().selection.selectedIds).toEqual([])
+    expect(asked).toEqual([['wall_free'], ['wall_held']])
+
+    uninstall()
+    useViewer.getState().setSelection({ selectedIds: ['wall_held' as never] })
+    expect(useViewer.getState().selection.selectedIds).toEqual(['wall_held'])
   })
 })

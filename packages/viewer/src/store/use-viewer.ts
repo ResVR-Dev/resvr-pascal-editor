@@ -20,11 +20,28 @@ export type RenderContext = 'editor' | 'viewer'
 export type MetricNotation = 'meters' | 'millimeters'
 export type WallMode = 'up' | 'cutaway' | 'down' | 'translucent'
 
-type SelectionPath = {
+export type SelectionPath = {
   buildingId: BuildingNode['id'] | null
   levelId: LevelNode['id'] | null
   zoneId: ZoneNode['id'] | null
   selectedIds: BaseNode['id'][] // For items/assets (multi-select)
+}
+
+/**
+ * A host's say over a selection before it lands: false keeps the current one. A shared session uses
+ * it to keep a node another person is editing from being selected here. Clearing the selection is
+ * never asked about.
+ */
+export type SelectionGuard = (next: SelectionPath, current: SelectionPath) => boolean
+
+let selectionGuard: SelectionGuard | null = null
+
+/** Installs the host's selection guard; returns the uninstall. One at a time. */
+export function installSelectionGuard(guard: SelectionGuard): () => void {
+  selectionGuard = guard
+  return () => {
+    if (selectionGuard === guard) selectionGuard = null
+  }
 }
 
 type Outliner = {
@@ -545,6 +562,8 @@ const useViewer = create<ViewerState>()(
           if (updates.zoneId !== undefined) {
             if (updates.selectedIds === undefined) newSelection.selectedIds = []
           }
+
+          if (selectionGuard && !selectionGuard(newSelection, state.selection)) return {}
 
           return { selection: newSelection, previewSelectedIds: [] }
         }),

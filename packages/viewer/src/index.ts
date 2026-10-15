@@ -239,7 +239,10 @@ export { catalogLightSource, useItemLightPool } from './store/use-item-light-poo
 export {
   applyCountryUnitDefault,
   default as useViewer,
+  installSelectionGuard,
   type MetricNotation,
+  type SelectionGuard,
+  type SelectionPath,
   type WallMode,
 } from './store/use-viewer'
 export {
