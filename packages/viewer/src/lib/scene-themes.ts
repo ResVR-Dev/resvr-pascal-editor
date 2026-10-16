@@ -26,9 +26,85 @@ export type SceneTheme = {
   }>
   toneMappingExposure: number
   clayTints?: Partial<Record<SurfaceRole, string>>
+  // resvr fork. A theme the host added rather than one of Pascal's own.
+  isHost?: boolean
 }
 
 export const SCENE_THEMES: SceneTheme[] = [
+  // resvr fork. Three times of day for the showhome, listed before Pascal's own.
+  //
+  // Not a sun at an angle: this is the same rig as every theme below, lit to read as morning, day
+  // and evening. Evening is the one that earns its place, because the fixtures a buyer switches on
+  // only read against a ground dark enough to show them, and none of Pascal's light themes is.
+  {
+    id: 'morning',
+    isHost: true,
+    name: 'Morning',
+    appearance: 'light',
+    background: '#e9eef3',
+    backgroundSky: '#cfe1ef',
+    ground: '#e3e4e1',
+    ambient: { color: '#fff3e6', intensity: 0.5 },
+    hemi: { sky: '#e9f1ff', ground: '#b9b1a5', intensity: 0.4 },
+    lights: [
+      { position: [16, 13, 10], color: '#ffe7cb', intensity: 2.8, castShadow: true },
+      { position: [-12, 8, -8], color: '#d0e1ff', intensity: 0.5 },
+    ],
+    toneMappingExposure: 1,
+    clayTints: {
+      wall: '#efe9e0',
+      floor: '#ded5c7',
+      ceiling: '#f5f0e7',
+      roof: '#bdb4a2',
+      glazing: '#cdd9e2',
+    },
+  },
+  {
+    id: 'day',
+    isHost: true,
+    name: 'Day',
+    appearance: 'light',
+    background: '#f2f4f5',
+    backgroundSky: '#bcd4e8',
+    ground: '#e6e5e1',
+    ambient: { color: '#ffffff', intensity: 0.25 },
+    hemi: { sky: '#ffffff', ground: '#a9a59d', intensity: 0.5 },
+    lights: [
+      { position: [10, 18, 10], color: '#fffaf2', intensity: 3.6, castShadow: true },
+      { position: [-10, 10, -10], color: '#e8f0ff', intensity: 0.6 },
+    ],
+    toneMappingExposure: 0.95,
+    clayTints: {
+      wall: '#eae7e0',
+      floor: '#d9d4c9',
+      ceiling: '#f2efe8',
+      roof: '#c0b8a8',
+      glazing: '#ccd6de',
+    },
+  },
+  {
+    id: 'evening',
+    isHost: true,
+    name: 'Evening',
+    appearance: 'dark',
+    background: '#2b3242',
+    backgroundSky: '#191f2b',
+    ground: '#404758',
+    ambient: { color: '#8e9ec4', intensity: 0.3 },
+    hemi: { sky: '#6e7fa8', ground: '#2a303d', intensity: 0.45 },
+    lights: [
+      { position: [-14, 10, -12], color: '#8094c8', intensity: 0.9, castShadow: true },
+      { position: [12, 5, 10], color: '#ffa868', intensity: 0.5 },
+    ],
+    toneMappingExposure: 0.95,
+    clayTints: {
+      wall: '#9aa2b4',
+      floor: '#868ea1',
+      ceiling: '#a7afc1',
+      roof: '#555d72',
+      glazing: '#9eabc0',
+    },
+  },
   {
     id: 'studio',
     name: 'Studio',
