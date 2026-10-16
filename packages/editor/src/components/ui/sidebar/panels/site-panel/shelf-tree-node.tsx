@@ -47,8 +47,10 @@ export const ShelfTreeNode = memo(function ShelfTreeNode({
   // Expand when a descendant is selected — same imperative subscription
   // the item tree-node uses, so we don't re-render when unrelated
   // selection-state ticks.
+  // resvr fork: read once on mount as well. A kind folder mounts its rows when it opens, which it
+  // does because something in it was picked, so by then the pick has already been and gone.
   useEffect(() => {
-    return useViewer.subscribe((state) => {
+    const openForDescendant = (state: ReturnType<typeof useViewer.getState>) => {
       const { selectedIds } = state.selection
       if (selectedIds.length === 0) return
       const nodes = useScene.getState().nodes
@@ -62,7 +64,11 @@ export const ShelfTreeNode = memo(function ShelfTreeNode({
           current = nodes[current.parentId as AnyNodeId]
         }
       }
-    })
+    }
+
+    openForDescendant(useViewer.getState())
+
+    return useViewer.subscribe(openForDescendant)
   }, [nodeId])
 
   const handleClick = useCallback(

@@ -29,10 +29,18 @@ export const KindFolderTreeNode = memo(function KindFolderTreeNode({
   // A closed folder does not render its rows at all, so without this, picking a wall on the canvas
   // highlights a row that is not there. Imperative, and checked once on mount, because a floor
   // switch builds these folders with a selection already made.
+  //
+  // Only on a change of what is picked. Every hover writes to the viewer store, and reading the
+  // selection on each of those would mean a folder holding the selected wall could never be shut.
   useEffect(() => {
     const held = new Set<string>(nodeIds)
+    let last = ''
     const openWhenHeld = (state: ReturnType<typeof useViewer.getState>) => {
       const { selectedIds } = state.selection
+      const picked = selectedIds.join(',')
+      if (picked === last) return
+
+      last = picked
       if (selectedIds.length === 0) return
 
       const nodes = useScene.getState().nodes

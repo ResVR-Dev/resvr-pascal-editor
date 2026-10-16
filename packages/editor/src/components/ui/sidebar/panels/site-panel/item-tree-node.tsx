@@ -48,8 +48,10 @@ export const ItemTreeNode = memo(function ItemTreeNode({
   const setHoveredId = useViewer((state) => state.setHoveredId)
 
   // Expand when a descendant is selected — imperative to avoid subscribing to the full selectedIds array
+  // resvr fork: read once on mount as well. A kind folder mounts its rows when it opens, which it
+  // does because something in it was picked, so by then the pick has already been and gone.
   useEffect(() => {
-    return useViewer.subscribe((state) => {
+    const openForDescendant = (state: ReturnType<typeof useViewer.getState>) => {
       const { selectedIds } = state.selection
       if (selectedIds.length === 0) return
       const nodes = useScene.getState().nodes
@@ -63,7 +65,11 @@ export const ItemTreeNode = memo(function ItemTreeNode({
           current = nodes[current.parentId as AnyNodeId]
         }
       }
-    })
+    }
+
+    openForDescendant(useViewer.getState())
+
+    return useViewer.subscribe(openForDescendant)
   }, [nodeId])
 
   const handleClick = useCallback(
