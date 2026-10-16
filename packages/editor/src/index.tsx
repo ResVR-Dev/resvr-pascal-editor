@@ -891,6 +891,7 @@ export {
 } from './lib/world-grid-snap'
 export { subscribeCameraPose } from './store/camera-pose-store'
 export type { HostNodeAction, HostNodeActions } from './store/host-node-actions-store'
+export type { HostRenameGuard } from './store/host-rename-guard-store'
 export { default as useAlignmentGuides } from './store/use-alignment-guides'
 export { default as useAudio } from './store/use-audio'
 export { type CameraHintAction, useCameraHintFocus } from './store/use-camera-hint-focus'

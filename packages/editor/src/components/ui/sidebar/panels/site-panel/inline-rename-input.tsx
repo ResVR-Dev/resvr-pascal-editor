@@ -2,6 +2,7 @@ import { type AnyNodeId, useScene } from '@pascal-app/core'
 import { Pencil } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { cn } from './../../../../../lib/utils'
+import { useIsRenamable } from '../../../../../store/host-rename-guard-store'
 
 interface InlineRenameFieldProps {
   name: string | undefined
@@ -27,11 +28,23 @@ export const InlineRenameInput = memo(function InlineRenameInput({
 }: InlineRenameInputProps) {
   const updateNode = useScene((s) => s.updateNode)
   const name = useScene((s) => s.nodes[nodeId]?.name)
+  // resvr fork: a host that names this kind of node by a rule owns the name, so the pencil goes.
+  // Typing into it would be undone by the rule the next time anything near the node moved.
+  const node = useScene((s) => s.nodes[nodeId])
+  const isRenamable = useIsRenamable(node)
   const handleRename = useCallback(
     (next: string | undefined) => updateNode(nodeId, { name: next }),
     [nodeId, updateNode],
   )
-  return <InlineRenameField {...props} name={name} onRename={handleRename} />
+  return (
+    <InlineRenameField
+      {...props}
+      isEditing={isRenamable && props.isEditing}
+      name={name}
+      onRename={handleRename}
+      onStartEditing={isRenamable ? props.onStartEditing : undefined}
+    />
+  )
 })
 
 export const InlineRenameField = memo(function InlineRenameField({

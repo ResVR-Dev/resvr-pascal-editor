@@ -66,6 +66,10 @@ import {
   type HostNodeActions,
   setHostNodeActions,
 } from '../../store/host-node-actions-store'
+import {
+  type HostRenameGuard,
+  setHostRenameGuard,
+} from '../../store/host-rename-guard-store'
 import { type CameraHintAction, useCameraHintFocus } from '../../store/use-camera-hint-focus'
 import useEditor from '../../store/use-editor'
 import useFloorplanMode from '../../store/use-floorplan-mode'
@@ -246,6 +250,10 @@ export interface EditorProps {
 
   /** resvr fork: buttons the host adds to the floating action menu over the selection. */
   hostNodeActions?: HostNodeActions
+
+  /** resvr fork: whether a node may be renamed by hand. A host that names nodes by a rule of its
+   *  own owns those names, and the pencil does not appear on them. */
+  hostRenameGuard?: HostRenameGuard
 
   /** Host-owned content mounted inside the editor's React Three Fiber scene. */
   viewerSceneSlot?: ReactNode
@@ -1414,6 +1422,7 @@ function EditorContent({
   inspectorFooter,
   multiSelectionFooter,
   hostNodeActions,
+  hostRenameGuard,
   viewerSceneSlot,
   floorplanSceneSlot,
   projectId,
@@ -1473,6 +1482,11 @@ function EditorContent({
     setHostNodeActions(hostNodeActions ?? null)
     return () => setHostNodeActions(null)
   }, [hostNodeActions])
+
+  useEffect(() => {
+    setHostRenameGuard(hostRenameGuard ?? null)
+    return () => setHostRenameGuard(null)
+  }, [hostRenameGuard])
 
   const { beginSceneLoad, completeSceneLoad, saveNow } = useAutoSave({
     guardAgainstSceneWipe,
