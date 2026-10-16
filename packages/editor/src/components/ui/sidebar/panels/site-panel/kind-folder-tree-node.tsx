@@ -1,7 +1,7 @@
 import { type AnyNodeId, useScene } from '@pascal-app/core'
 import { useViewer } from '@pascal-app/viewer'
 import { Folder, FolderOpen } from 'lucide-react'
-import { memo, useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { TreeNode, TreeNodeWrapper } from './tree-node'
 
 // resvr fork. One kind's rows under a floor, behind a row that says how many there are.
@@ -32,15 +32,19 @@ export const KindFolderTreeNode = memo(function KindFolderTreeNode({
   //
   // Only on a change of what is picked. Every hover writes to the viewer store, and reading the
   // selection on each of those would mean a folder holding the selected wall could never be shut.
+  // Held in a ref rather than in the effect, because the effect runs again whenever the folder is
+  // rebuilt, and a rename rebuilds every folder on the floor. Starting over would reopen a folder
+  // somebody shut, on a pick they made a minute ago.
+  const lastPicked = useRef('')
+
   useEffect(() => {
     const held = new Set<string>(nodeIds)
-    let last = ''
     const openWhenHeld = (state: ReturnType<typeof useViewer.getState>) => {
       const { selectedIds } = state.selection
       const picked = selectedIds.join(',')
-      if (picked === last) return
+      if (picked === lastPicked.current) return
 
-      last = picked
+      lastPicked.current = picked
       if (selectedIds.length === 0) return
 
       const nodes = useScene.getState().nodes
