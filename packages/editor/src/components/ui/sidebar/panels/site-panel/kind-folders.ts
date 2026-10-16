@@ -57,10 +57,17 @@ export function useKindFolders(childIds: readonly AnyNodeId[]): KindFolder[] {
   ])
 }
 
-// Everything the grouping reads. An id carries its node's kind, so the names are all that has to
-// be fetched.
+// Everything the grouping reads. An id carries its node's kind, so what is left is the name and
+// whether the registry is hiding the row: a kind that hides a row on a change to something else,
+// as a cabinet folded into a run does, would otherwise leave a stale count behind.
 function signatureOf(childIds: readonly AnyNodeId[], nodes: Nodes): string {
-  return childIds.map((childId) => `${childId}:${nodes[childId]?.name ?? ''}`).join('|')
+  return childIds
+    .map((childId) => {
+      const node = nodes[childId]
+
+      return `${childId}:${node?.name ?? ''}:${node && isHiddenRow(node, nodes) ? 'x' : ''}`
+    })
+    .join('|')
 }
 
 // What a row shows, give or take a registry override, which needs the whole node and is not worth
@@ -82,9 +89,10 @@ function labelOfKind(type: string): string {
 }
 
 // English, for labels that are all one or two plain nouns. A kind whose label needs more than this
-// is a kind that should carry its own plural.
+// is a kind that should carry its own plural. Shelves takes the f rule and roofs does not, so the
+// rule is for the words that end in a consonant and an f.
 function pluralise(label: string): string {
-  if (/f$/i.test(label)) return `${label.slice(0, -1)}ves`
+  if (/(lf|fe)$/i.test(label)) return `${label.replace(/fe?$/i, '')}ves`
   if (/[^aeiou]y$/i.test(label)) return `${label.slice(0, -1)}ies`
   if (/(s|x|z|ch|sh)$/i.test(label)) return `${label}es`
 

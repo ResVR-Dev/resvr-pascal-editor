@@ -1,5 +1,11 @@
 import { expect, test } from 'bun:test'
-import type { AnyNode, AnyNodeId } from '@pascal-app/core'
+import {
+  type AnyNode,
+  type AnyNodeDefinition,
+  type AnyNodeId,
+  nodeRegistry,
+  registerNode,
+} from '@pascal-app/core'
 import { groupChildrenByKind } from './kind-folders'
 
 // resvr fork. The kinds here are not registered, so every label falls back to the type itself and
@@ -93,5 +99,34 @@ test('spells the awkward plurals', () => {
     'chimneys',
     'scans',
     'shelves',
+  ])
+})
+
+// A kind can hide its own rows, and a folder that counted those would be counting rows the tree
+// never draws.
+test('leaves out a row the registry hides', () => {
+  const restore = nodeRegistry._snapshot()
+  registerNode({
+    kind: 'ghost',
+    schemaVersion: 1,
+    presentation: { label: 'Ghost', icon: { kind: 'iconify', name: 'lucide:square' } },
+    tree: { hidden: (node: AnyNode) => node.name === 'hidden' },
+  } as unknown as AnyNodeDefinition)
+  const nodes = sceneOf(['ghost_1', 'ghost', 'shown'], ['ghost_2', 'ghost', 'hidden'])
+
+  const folders = groupChildrenByKind(idsOf(nodes), nodes)
+
+  expect(folders[0]?.label).toBe('Ghosts')
+  expect(folders[0]?.nodeIds).toEqual(['ghost_1'] as unknown as AnyNodeId[])
+  restore()
+})
+
+// A roof is not a shelf. Both end in f and only one of them takes ves.
+test('leaves the f alone where English does', () => {
+  const nodes = sceneOf(['roof_1', 'roof'], ['knife_1', 'knife'])
+
+  expect(groupChildrenByKind(idsOf(nodes), nodes).map((folder) => folder.label)).toEqual([
+    'knives',
+    'roofs',
   ])
 })
