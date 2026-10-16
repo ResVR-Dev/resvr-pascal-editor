@@ -80,6 +80,8 @@ import { MetricControl } from '../../../controls/metric-control'
 import { LevelDuplicateDialog } from '../../../level-duplicate-dialog'
 import { CollectionsSection } from './collection-tree-node'
 import { InlineRenameInput } from './inline-rename-input'
+import { KindFolderTreeNode } from './kind-folder-tree-node'
+import { useKindFolders } from './kind-folders'
 import { OutlineLevelSummary } from './outline-badges'
 import { ZoneMembershipCheckbox } from './zone-membership-checkbox'
 import { focusTreeNode, TreeNode, TreeNodeWrapper } from './tree-node'
@@ -1461,6 +1463,9 @@ const ContentSection = memo(function ContentSection() {
     }),
   )
   const [expanded, setExpanded] = useState(true)
+  // resvr fork: a floor's elements are shown a kind at a time. Fifty walls, a dozen openings and
+  // the slabs in one flat list is a list nobody can find anything in.
+  const folders = useKindFolders(elementChildren)
 
   if (!level) {
     return (
@@ -1485,18 +1490,19 @@ const ContentSection = memo(function ContentSection() {
       onClick={() => setExpanded((value) => !value)}
       onToggle={() => setExpanded((value) => !value)}
     >
-      {elementChildren.length === 0 ? (
+      {folders.length === 0 ? (
         <div className="border-border/50 border-b py-2 pr-3 pl-[52px] text-muted-foreground text-xs">
           No elements on this level
         </div>
       ) : (
         <TreeNodeDragProvider>
-          {elementChildren.map((childId, index) => (
-            <TreeNode
+          {folders.map((folder, index) => (
+            <KindFolderTreeNode
               depth={2}
-              isLast={index === elementChildren.length - 1}
-              key={childId}
-              nodeId={childId}
+              isLast={index === folders.length - 1}
+              key={folder.type}
+              label={folder.label}
+              nodeIds={folder.nodeIds}
             />
           ))}
         </TreeNodeDragProvider>
