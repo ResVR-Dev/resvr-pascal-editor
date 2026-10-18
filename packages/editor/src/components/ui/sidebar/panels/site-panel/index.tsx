@@ -1503,6 +1503,7 @@ const ContentSection = memo(function ContentSection() {
               key={folder.type}
               label={folder.label}
               nodeIds={folder.nodeIds}
+              type={folder.type}
             />
           ))}
         </TreeNodeDragProvider>

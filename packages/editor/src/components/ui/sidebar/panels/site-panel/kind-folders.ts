@@ -10,8 +10,18 @@ import { useMemo } from 'react'
 //
 // Pure, so the ordering can be tested without mounting the tree.
 
+/**
+ * The folder a fixture that emits goes in, rather than in with the rest of the items. Not a node
+ * type: no kind of Pascal's says anything about light, an emitting item is an item whose catalog
+ * entry carries a light effect, and that is the one thing somebody lighting a house wants listed
+ * on its own.
+ */
+export const LIGHT_FOLDER = 'resvr:light'
+
+const LIGHT_LABEL = 'Lights'
+
 export type KindFolder = {
-  /** The node type every id under this folder has. */
+  /** The node type every id under this folder has, or LIGHT_FOLDER. */
   type: string
   /** Plural of the kind's own label: Walls, Windows, Shelves. */
   label: string
@@ -30,9 +40,10 @@ export function groupChildrenByKind(childIds: readonly AnyNodeId[], nodes: Nodes
     const node = nodes[childId]
     if (!node || isHiddenRow(node, nodes)) continue
 
-    const held = byType.get(node.type)
+    const type = folderTypeOf(node)
+    const held = byType.get(type)
     if (held) held.push(node)
-    else byType.set(node.type, [node])
+    else byType.set(type, [node])
   }
 
   return Array.from(byType, ([type, held]) => ({
@@ -65,7 +76,9 @@ function signatureOf(childIds: readonly AnyNodeId[], nodes: Nodes): string {
     .map((childId) => {
       const node = nodes[childId]
 
-      return `${childId}:${node?.name ?? ''}:${node && isHiddenRow(node, nodes) ? 'x' : ''}`
+      const type = node ? folderTypeOf(node) : ''
+
+      return `${childId}:${type}:${node?.name ?? ''}:${node && isHiddenRow(node, nodes) ? 'x' : ''}`
     })
     .join('|')
 }
@@ -78,11 +91,27 @@ function byName(left: AnyNode, right: AnyNode): number {
   return compared === 0 ? left.id.localeCompare(right.id) : compared
 }
 
+/** Whether this node lights the house: an item whose catalog entry carries a light effect. */
+export function doesEmit(node: AnyNode): boolean {
+  if (node.type !== 'item') return false
+
+  const effects = (node as { asset?: { interactive?: { effects?: { kind: string }[] } } }).asset
+    ?.interactive?.effects
+
+  return (effects ?? []).some((effect) => effect.kind === 'light')
+}
+
+function folderTypeOf(node: AnyNode): string {
+  return doesEmit(node) ? LIGHT_FOLDER : node.type
+}
+
 function isHiddenRow(node: AnyNode, nodes: Nodes): boolean {
   return nodeRegistry.get(node.type)?.tree?.hidden?.(node, nodes) ?? false
 }
 
 function labelOfKind(type: string): string {
+  if (type === LIGHT_FOLDER) return LIGHT_LABEL
+
   const label = nodeRegistry.get(type)?.presentation?.label
 
   return label && label.length > 0 ? label : type
@@ -92,6 +121,7 @@ function labelOfKind(type: string): string {
 // is a kind that should carry its own plural. Shelves takes the f rule and roofs does not, so the
 // rule is for the words that end in a consonant and an f.
 function pluralise(label: string): string {
+  if (label === LIGHT_LABEL) return label
   if (/(lf|fe)$/i.test(label)) return `${label.replace(/fe?$/i, '')}ves`
   if (/[^aeiou]y$/i.test(label)) return `${label.slice(0, -1)}ies`
   if (/(s|x|z|ch|sh)$/i.test(label)) return `${label}es`

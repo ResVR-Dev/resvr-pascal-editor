@@ -2,6 +2,8 @@ import { type AnyNodeId, useScene } from '@pascal-app/core'
 import { useViewer } from '@pascal-app/viewer'
 import { Folder, FolderOpen } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { LIGHT_FOLDER } from './kind-folders'
+import { LightsSwitch } from './lights-switch'
 import { TreeNode, TreeNodeWrapper } from './tree-node'
 
 // resvr fork. One kind's rows under a floor, behind a row that says how many there are.
@@ -10,6 +12,8 @@ import { TreeNode, TreeNodeWrapper } from './tree-node'
 // it, which is the only thing it does.
 
 interface KindFolderTreeNodeProps {
+  /** The folder's own type, which decides whether the row carries a control. */
+  type: string
   label: string
   nodeIds: AnyNodeId[]
   depth: number
@@ -17,6 +21,7 @@ interface KindFolderTreeNodeProps {
 }
 
 export const KindFolderTreeNode = memo(function KindFolderTreeNode({
+  type,
   label,
   nodeIds,
   depth,
@@ -82,6 +87,7 @@ export const KindFolderTreeNode = memo(function KindFolderTreeNode({
       }
       onClick={handleToggle}
       onToggle={handleToggle}
+      summary={type === LIGHT_FOLDER ? <LightsSwitch /> : undefined}
     >
       {nodeIds.map((nodeId, index) => (
         <TreeNode

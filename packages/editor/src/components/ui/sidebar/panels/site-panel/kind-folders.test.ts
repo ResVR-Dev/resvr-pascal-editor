@@ -6,7 +6,7 @@ import {
   nodeRegistry,
   registerNode,
 } from '@pascal-app/core'
-import { groupChildrenByKind } from './kind-folders'
+import { doesEmit, groupChildrenByKind, LIGHT_FOLDER } from './kind-folders'
 
 // resvr fork. The kinds here are not registered, so every label falls back to the type itself and
 // the plurals come out lower case. What is being checked is the gathering and the ordering.
@@ -20,6 +20,16 @@ function sceneOf(...rows: [string, string, string?][]): Nodes {
   }
 
   return nodes
+}
+
+// An item the catalog gave a light effect to, which is what makes a fixture a light.
+function lamp(id: string, name: string, effectKind = 'light'): AnyNode {
+  return {
+    id,
+    type: 'item',
+    name,
+    asset: { interactive: { controls: [{ kind: 'toggle' }], effects: [{ kind: effectKind }] } },
+  } as unknown as AnyNode
 }
 
 function idsOf(nodes: Nodes): AnyNodeId[] {
@@ -129,4 +139,33 @@ test('leaves the f alone where English does', () => {
     'knives',
     'roofs',
   ])
+})
+
+test('gathers what emits into a folder of its own', () => {
+  const nodes: Nodes = {
+    item_1: { id: 'item_1', type: 'item', name: 'Sofa' } as unknown as AnyNode,
+    item_2: lamp('item_2', 'Pendant'),
+    item_3: lamp('item_3', 'Sconce'),
+  }
+
+  const folders = groupChildrenByKind(idsOf(nodes), nodes)
+
+  expect(folders.map((folder) => [folder.label, folder.nodeIds.length])).toEqual([
+    ['items', 1],
+    ['Lights', 2],
+  ])
+  expect(folders[1]?.type).toBe(LIGHT_FOLDER)
+})
+
+// Pascal's effects are a list of kinds and light is one of several. A sound effect is not a lamp.
+test('tells a light effect from another one', () => {
+  expect(doesEmit(lamp('item_1', 'Pendant'))).toBe(true)
+  expect(doesEmit(lamp('item_2', 'Speaker', 'sound'))).toBe(false)
+  expect(doesEmit({ id: 'wall_1', type: 'wall' } as unknown as AnyNode)).toBe(false)
+})
+
+test('leaves Lights alone rather than pluralising it again', () => {
+  const nodes: Nodes = { item_1: lamp('item_1', 'Pendant') }
+
+  expect(groupChildrenByKind(idsOf(nodes), nodes)[0]?.label).toBe('Lights')
 })
