@@ -35,34 +35,30 @@ export const KindFolderTreeNode = memo(function KindFolderTreeNode({
   // highlights a row that is not there. Imperative, and checked once on mount, because a floor
   // switch builds these folders with a selection already made.
   //
-  // Only on a change of what is picked. Every hover writes to the viewer store, and reading the
-  // selection on each of those would mean a folder holding the selected wall could never be shut.
-  // Held in a ref rather than in the effect, because the effect runs again whenever the folder is
-  // rebuilt, and a rename rebuilds every folder on the floor. Starting over would reopen a folder
-  // somebody shut, on a pick they made a minute ago.
+  // On a new pick, or on this folder taking in what was already picked. Every hover writes to the
+  // viewer store, and opening on each of those would mean a folder holding the selected wall could
+  // never be shut.
+  //
+  // Both are refs rather than effect locals, because the effect runs again whenever the folder is
+  // rebuilt and a rename rebuilds every folder on the floor. Starting over would reopen a folder
+  // somebody shut, on a pick they made a minute ago; keeping what was held is what tells a rename
+  // from a lamp swapped for one that emits, which moves a selected row into another folder.
   const lastPicked = useRef('')
+  const didHold = useRef(false)
 
   useEffect(() => {
     const held = new Set<string>(nodeIds)
     const openWhenHeld = (state: ReturnType<typeof useViewer.getState>) => {
       const { selectedIds } = state.selection
       const picked = selectedIds.join(',')
-      if (picked === lastPicked.current) return
+      const isNewPick = picked !== lastPicked.current
+      const holdsNow = selectedIds.length > 0 && doesHoldAny(held, selectedIds)
+      const wasHolding = didHold.current
 
       lastPicked.current = picked
-      if (selectedIds.length === 0) return
+      didHold.current = holdsNow
 
-      const nodes = useScene.getState().nodes
-      for (const id of selectedIds) {
-        let current = nodes[id as AnyNodeId]
-        while (current) {
-          if (held.has(current.id)) {
-            setExpanded(true)
-            return
-          }
-          current = current.parentId ? nodes[current.parentId as AnyNodeId] : undefined
-        }
-      }
+      if (doesOpenFor({ holdsNow, isNewPick, wasHolding })) setExpanded(true)
     }
 
     openWhenHeld(useViewer.getState())
@@ -100,3 +96,33 @@ export const KindFolderTreeNode = memo(function KindFolderTreeNode({
     </TreeNodeWrapper>
   )
 })
+
+/**
+ * Whether a folder opens itself.
+ *
+ * Two reasons and no others: somebody picked something in here, or this folder has just taken in
+ * what was already picked. Opening whenever it merely still holds the selection would undo every
+ * close by hand, since anything at all writing to the viewer store asks again.
+ */
+export function doesOpenFor(now: {
+  holdsNow: boolean
+  isNewPick: boolean
+  wasHolding: boolean
+}): boolean {
+  return now.holdsNow && (now.isNewPick || !now.wasHolding)
+}
+
+// Whether any of these ids is in the folder, or hangs off something that is: a window is picked on
+// the canvas and the wall holding it is the row that has to appear.
+function doesHoldAny(held: ReadonlySet<string>, selectedIds: readonly string[]): boolean {
+  const nodes = useScene.getState().nodes
+  for (const id of selectedIds) {
+    let current = nodes[id as AnyNodeId]
+    while (current) {
+      if (held.has(current.id)) return true
+      current = current.parentId ? nodes[current.parentId as AnyNodeId] : undefined
+    }
+  }
+
+  return false
+}
