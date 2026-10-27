@@ -702,6 +702,7 @@ export type {
 } from './lib/model-export'
 export { eyedropperMaterial } from './lib/paint-eyedropper'
 export {
+  commitPaintScopeFanout,
   cyclePaintScope,
   type PaintHoverInfo,
   type PaintScope,
