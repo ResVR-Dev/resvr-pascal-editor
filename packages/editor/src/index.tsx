@@ -701,8 +701,8 @@ export type {
   ModelExportOptions,
 } from './lib/model-export'
 export { eyedropperMaterial } from './lib/paint-eyedropper'
+export { paintSurface } from './components/ui/controls/finish-swatch'
 export {
-  commitPaintScopeFanout,
   cyclePaintScope,
   type PaintHoverInfo,
   type PaintScope,

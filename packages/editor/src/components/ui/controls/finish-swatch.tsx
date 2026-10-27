@@ -38,9 +38,10 @@ function describe(ref: string, materials: ReturnType<typeof useScene.getState>['
 
 /**
  * Paints one surface of a node from its panel, exactly as the paint tool does:
- * the kind's own paint commit for that role (same write, one undo step).
+ * the kind's own paint commit for that role (same write, one undo step). No
+ * preset erases the surface back to its default, as the eraser does.
  */
-export function paintSurface(node: AnyNode, role: string, materialPreset: string) {
+export function paintSurface(node: AnyNode, role: string, materialPreset: string | undefined) {
   const paint = nodeRegistry.get(node.type)?.capabilities?.paint
   if (!paint) return
   const args = { node, role, material: undefined, materialPreset }
