@@ -37,6 +37,7 @@ import {
   stampPascalTextureRef,
   useClipActions,
   useItemLightPool,
+  useLibraryMaterialsVersion,
   useNodeEvents,
   useViewer,
 } from '@pascal-app/viewer'
@@ -647,6 +648,9 @@ const LoadedModelRenderer = ({
   const textures = useViewer((s) => s.textures)
   const colorPreset = useViewer((s) => s.colorPreset)
   const sceneMaterials = useScene((s) => s.materials)
+  // A slot's `library:` ref can name an entry the host registers after mount;
+  // re-resolve when it lands instead of keeping the authored fallback.
+  const libraryMaterialsVersion = useLibraryMaterialsVersion()
   // Freeze the interactive definition at mount — asset schemas don't change at runtime
   const interactiveRef = useRef(node.asset.interactive)
 
@@ -724,7 +728,7 @@ const LoadedModelRenderer = ({
       mesh.castShadow = materialCastsShadow(mesh.material)
       mesh.receiveShadow = !hasLegacyGlass
     }
-  }, [shading, textures, colorPreset, node.slots, sceneMaterials])
+  }, [shading, textures, colorPreset, node.slots, sceneMaterials, libraryMaterialsVersion])
 
   const interactive = interactiveRef.current
   const animEffect =
